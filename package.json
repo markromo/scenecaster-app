@@ -1,0 +1,55 @@
+{
+  "name": "scenecaster",
+  "version": "1.0.0",
+  "description": "SceneCaster by e-llusion media",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "keygen": "node scripts/generate-key.js"
+  },
+  "build": {
+    "appId": "com.ellusion.scenecaster",
+    "productName": "SceneCaster",
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ]
+    },
+    "afterSign": "scripts/notarize.js",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "!scripts/**/*"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^29.4.6",
+    "electron-builder": "^24.0.0"
+  }
+}

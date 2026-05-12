@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+.wrap { position: fixed; inset: 0; opacity: 0; }
+.wrap video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+</style>
+</head>
+<body>
+<div id="wrap-a" class="wrap" style="z-index:1">
+  <video id="vid-a" playsinline></video>
+</div>
+<div id="wrap-b" class="wrap" style="z-index:1">
+  <video id="vid-b" playsinline></video>
+</div>
+<script>
+const wrapA = document.getElementById('wrap-a')
+const wrapB = document.getElementById('wrap-b')
+const vidA  = document.getElementById('vid-a')
+const vidB  = document.getElementById('vid-b')
+let active  = 'a'
+
+function getActive()   { return active === 'a' ? { wrap: wrapA, vid: vidA } : { wrap: wrapB, vid: vidB } }
+function getInactive() { return active === 'a' ? { wrap: wrapB, vid: vidB } : { wrap: wrapA, vid: vidA } }
+
+function fadeWrap(el, toOpacity, durationSec) {
+  if (el._fadeTimer) { clearInterval(el._fadeTimer); el._fadeTimer = null }
+  const from = parseFloat(el.style.opacity) || 0
+  if (durationSec <= 0) { el.style.opacity = String(toOpacity); return }
+  const durationMs = durationSec * 1000
+  const t0 = Date.now()
+  el._fadeTimer = setInterval(() => {
+    const p = Math.min((Date.now() - t0) / durationMs, 1)
+    el.style.opacity = String(from + (toOpacity - from) * p)
+    if (p >= 1) { clearInterval(el._fadeTimer); el._fadeTimer = null }
+  }, 16)
+}
+
+function makeFilter(b, c, h, s) {
+  return `brightness(${b ?? 100}%) contrast(${c ?? 100}%) hue-rotate(${h ?? 0}deg) saturate(${s ?? 100}%)`
+}
+
+function crossfadeTo(src, dissolve, looping, colorSettings) {
+  const { wrap: inWrap, vid: inVid } = getInactive()
+  const { wrap: outWrap, vid: outVid } = getActive()
+  // Apply new scene's color to incoming wrap immediately — outWrap keeps its own filter throughout
+  if (colorSettings) {
+    inWrap.style.filter = makeFilter(colorSettings.brightness, colorSettings.contrast, colorSettings.hue, colorSettings.saturation)
+  }
+
+  outVid.ontimeupdate = null
+  inWrap.style.zIndex  = '2'
+  outWrap.style.zIndex = '1'
+  inVid.src  = src
+  inVid.loop = false
+
+  function startFade() {
+    inVid.play().catch(e => console.warn('play error:', e))
+    active = active === 'a' ? 'b' : 'a'
+    // Wait for first real decoded frame before switching — prevents black flash
+    const doSwitch = () => {
+      inVid.ontimeupdate = null
+      if (dissolve <= 0.1) {
+        inWrap.style.opacity = '1'
+        outWrap.style.opacity = '0'
+      } else {
+        fadeWrap(inWrap, 1, dissolve)
+      }
+      setTimeout(() => {
+        outWrap.style.zIndex = '1'
+        outWrap.style.opacity = '0'
+        outVid.pause()
+        outVid.srcObject = null
+        outVid.src = ''
+      }, dissolve * 1000)
+      if (looping) scheduleLoopDissolve(inVid, src, dissolve)
+    }
+    inVid.ontimeupdate = doSwitch
+  }
+
+  if (outVid.readyState === 0) {
+    // First play — outVid is idle. Load the same src into it and wait until
+    // BOTH videos are ready/playing before starting the fade. Two simultaneous
+    // H.264 streams compete for the hardware overlay slot, which forces both
+    // through CSS compositing so opacity works correctly on the very first cue.
+    let inReady = false, outPlaying = false
+    const tryStart = () => { if (inReady && outPlaying) startFade() }
+
+    inVid.onloadeddata = () => { inReady = true; tryStart() }
+
+    const onOutPlaying = () => {
+      outVid.removeEventListener('playing', onOutPlaying)
+      outPlaying = true
+      tryStart()
+    }
+    outVid.addEventListener('playing', onOutPlaying)
+    outVid.src = src
+    outVid.muted = true
+    outVid.play().catch(() => { outPlaying = true; tryStart() })
+  } else {
+    inVid.onloadeddata = startFade
+  }
+}
+
+function scheduleLoopDissolve(vid, src, dissolve) {
+  let fired = false
+
+  const doLoop = (d) => {
+    if (fired) return
+    fired = true
+    vid.ontimeupdate = null
+    vid.onended = null
+    crossfadeTo(src, d, true)
+  }
+
+  // Foreground: smooth dissolve triggered before video ends
+  vid.ontimeupdate = () => {
+    if (fired || !vid.duration) return
+    const remaining = vid.duration - vid.currentTime
+    if (remaining <= dissolve && remaining > 0) doLoop(dissolve)
+  }
+
+  // Background fallback: if timeupdate stops firing, restart on ended
+  vid.onended = () => doLoop(0.5)
+}
+
+// Main-process heartbeat — resumes video if macOS suspended it
+window.showrunner.onKeepAlive(() => {
+  [vidA, vidB].forEach(v => {
+    if (v.src && v.paused && !v.ended) {
+      v.play().catch(e => console.warn('keep-alive resume:', e))
+    }
+  })
+})
+
+window.showrunner.onLedCommand(({ type, src, dissolve, loop, brightness, contrast, hue, saturation }) => {
+  const d = dissolve || 1
+  if (type === 'play') {
+    const colorSettings = (brightness != null || contrast != null || hue != null || saturation != null)
+      ? { brightness, contrast, hue, saturation } : null
+    crossfadeTo(src, d, loop || false, colorSettings)
+  }
+  if (type === 'black') {
+    vidA.ontimeupdate = null
+    vidB.ontimeupdate = null
+    fadeWrap(wrapA, 0, d)
+    fadeWrap(wrapB, 0, d)
+  }
+  if (type === 'color') {
+    // Live slider update — apply to whichever wrap is currently active
+    const { wrap: activeWrap } = getActive()
+    activeWrap.style.filter = makeFilter(brightness, contrast, hue, saturation)
+  }
+  if (type === 'fullscreen') {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.()
+  }
+})
+</script>
+</body>
+</html>

@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SceneCaster</title>
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+
+<!-- LOCK SCREEN -->
+<div id="screen-lock" class="screen hidden">
+  <div class="center-wrap">
+    <div class="brand-mark">
+      <svg width="56" height="56" viewBox="0 0 56 56"><circle cx="28" cy="28" r="28" fill="#FF5A0D" opacity="0.15"/><path d="M28 14C22.477 14 18 18.477 18 24v3h-2a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h24a2 2 0 0 0 2-2V29a2 2 0 0 0-2-2h-2v-3c0-5.523-4.477-10-10-10zm0 4a6 6 0 0 1 6 6v3H22v-3a6 6 0 0 1 6-6z" fill="#FF5A0D"/></svg>
+    </div>
+    <h1 id="lock-title">License Expired</h1>
+    <p id="lock-sub" class="muted"></p>
+    <p id="lock-detail" class="faint"></p>
+    <button class="btn-primary" id="btn-renew">Renew License ➔</button>
+    <p class="faint mt1">Already have a key? <span class="link" id="link-enter-key">Enter it here</span></p>
+    <p id="lock-support" class="faint mt1">Questions? Email <span class="link" id="link-support">support@e-llusionmedia.com</span></p>
+  </div>
+</div>
+
+<!-- ACTIVATE SCREEN -->
+<div id="screen-activate" class="screen hidden">
+  <div class="center-wrap">
+    <div class="brand-mark">
+      <svg width="48" height="48" viewBox="0 0 48 48"><circle cx="24" cy="24" r="24" fill="#FF5A0D"/><polygon points="18,14 36,24 18,34" fill="white"/></svg>
+      <span class="brand-name">SceneCaster</span>
+    </div>
+    <!-- Step 1: License key entry -->
+    <div id="step-key">
+      <h2>Activate your license</h2>
+      <p class="muted">Enter the license key from your purchase email.</p>
+      <input type="text" id="input-key" class="key-input" placeholder="Paste license key here…" spellcheck="false"/>
+      <div id="activate-error" class="error-msg hidden"></div>
+      <button class="btn-primary" id="btn-activate">Activate</button>
+      <p class="faint mt1">No key? <span class="link" id="link-purchase">Purchase one ➔</span></p>
+    </div>
+    <!-- Step 2: Show closing date (shown after key validates) -->
+    <div id="step-date" class="hidden">
+      <h2>One last step</h2>
+      <p class="muted">When is your last show date?</p>
+      <p class="faint">Your license will expire after your final performance.</p>
+      <input type="date" id="input-closing-date" class="key-input"/>
+      <div id="date-error" class="error-msg hidden"></div>
+      <button class="btn-primary" id="btn-set-date">Confirm &amp; Activate &#8594;</button>
+    </div>
+  </div>
+</div>
+
+<!-- DOWNLOAD SCREEN -->
+<div id="screen-download" class="screen hidden">
+  <div class="center-wrap download-wrap">
+    <div class="brand-mark">
+      <svg width="48" height="48" viewBox="0 0 48 48"><circle cx="24" cy="24" r="24" fill="#FF5A0D"/><polygon points="18,14 36,24 18,34" fill="white"/></svg>
+      <span class="brand-name">SceneCaster</span>
+    </div>
+    <h2 id="dl-title">Download Your Show</h2>
+    <p class="muted" id="dl-subtitle">Your scene files are ready to download.</p>
+    <div class="dl-progress-wrap">
+      <div class="dl-bar-bg"><div id="dl-bar-fill" class="dl-bar-fill" style="width:0%"></div></div>
+      <div class="dl-stats">
+        <span id="dl-current-file" class="dl-file-label">Ready to download</span>
+        <span id="dl-count" class="dl-count-label"></span>
+      </div>
+    </div>
+    <button class="btn-primary" id="btn-start-download" style="margin-top:1.5rem">Download Now</button>
+    <button class="btn-primary hidden" id="btn-launch-show" style="margin-top:.75rem;background:var(--blue)">Launch Show →</button>
+    <div id="dl-error" class="error-msg hidden" style="margin-top:1rem"></div>
+  </div>
+</div>
+
+<!-- MAIN OPERATOR SCREEN -->
+<div id="screen-player" class="screen hidden">
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="brand-inline">
+      <img src="brandmark.svg" width="28" height="28" style="display:block"/>
+      <span>SceneCaster</span>
+    </div>
+    <div class="topbar-show" id="topbar-show"></div>
+    <div class="topbar-right">
+      <span class="days-badge hidden" id="days-badge"></span>
+    </div>
+  </header>
+
+  <!-- Three panel layout -->
+  <div class="operator-layout">
+
+    <!-- LEFT — Scene list -->
+    <aside class="scene-list-panel">
+      <div class="panel-header">Scene List</div>
+      <div id="scene-list" class="scene-list"></div>
+    </aside>
+
+    <!-- CENTER — Two lanes -->
+    <main class="center-panel">
+      <!-- Backdrop lane (orange) -->
+      <div class="lane lane-backdrop">
+        <div class="backdrop-lane-header">
+          <div class="lane-label">Background Cues</div>
+        </div>
+        <div class="lane-scene" id="backdrop-scene">—</div>
+        <div id="preview-container" class="preview-container">
+          <video id="preview-a" class="preview-vid" muted playsinline></video>
+          <video id="preview-b" class="preview-vid" muted playsinline></video>
+        </div>
+        <div id="trigger-toolbar" class="trigger-toolbar hidden">
+          <button class="trigger-fmt-btn" id="trigger-bold" title="Bold"><strong>B</strong></button>
+          <button class="trigger-fmt-btn" id="trigger-italic" title="Italic"><em>I</em></button>
+        </div>
+        <div class="lane-trigger" id="backdrop-trigger">Click &rarr; when you see this line</div>
+        <div class="backdrop-controls">
+          <button class="key-btn" id="btn-b" title="B key — advance backdrop">&rarr;</button>
+          <button class="key-btn key-orange" id="btn-black" title="Fade to black">Blackout</button>
+          <button class="key-btn key-orange" id="btn-trigger-edit" title="Edit trigger text">✏️ Edit</button>
+          <button class="key-btn key-orange key-color" id="btn-color-toggle" title="Color correction">Color</button>
+        </div>
+      </div>
+
+      <!-- Lighting lane (blue) -->
+      <div class="lane lane-lighting">
+        <div class="lighting-lane-header">
+          <div class="lane-label">Lighting Cues <span id="lighting-counter" class="cue-counter hidden"></span></div>
+          <div class="lane-controls">
+            <button class="key-btn key-blue" id="btn-l-back" title="Step back lighting cue">&larr;</button>
+            <button class="key-btn key-blue" id="btn-l" title="L key — advance lighting">&rarr;</button>
+            <button class="key-btn key-blue" id="btn-edit-cue" title="Edit lighting cue">Edit</button>
+          </div>
+        </div>
+        <div id="lighting-cue-list" class="lighting-cue-list"></div>
+      </div>
+    </main>
+
+    <!-- RIGHT — Next up -->
+    <aside class="next-panel">
+      <div class="panel-header">Next Up</div>
+      <div class="next-section" id="next-up-backdrop-section">
+        <div class="next-label backdrop-label">Backdrop</div>
+        <div class="next-value" id="next-backdrop">—</div>
+        <div class="next-trigger" id="next-backdrop-trigger"></div>
+      </div>
+      <div class="next-section" id="next-up-lighting-section">
+        <div class="next-label lighting-label">Lighting</div>
+        <div class="next-value" id="next-lighting">—</div>
+      </div>
+      <div id="color-panel" class="color-panel hidden">
+        <div class="cc-panel-title">Color Correction<button id="cc-close" class="cc-close-btn" title="Close">✕</button></div>
+        <div class="cc-row">
+          <span class="cc-label">Brightness</span>
+          <input type="range" id="cc-brightness" min="0" max="200" step="1" value="100"/>
+          <span class="cc-val" id="cc-brightness-val">100</span>
+        </div>
+        <div class="cc-row">
+          <span class="cc-label">Contrast</span>
+          <input type="range" id="cc-contrast" min="0" max="200" step="1" value="100"/>
+          <span class="cc-val" id="cc-contrast-val">100</span>
+        </div>
+        <div class="cc-row">
+          <span class="cc-label">Hue</span>
+          <input type="range" id="cc-hue" min="-180" max="180" step="1" value="0"/>
+          <span class="cc-val" id="cc-hue-val">0°</span>
+        </div>
+        <div class="cc-row">
+          <span class="cc-label">Saturation</span>
+          <input type="range" id="cc-saturation" min="0" max="200" step="1" value="100"/>
+          <span class="cc-val" id="cc-saturation-val">100</span>
+        </div>
+        <button id="cc-reset" class="cc-reset-btn">Reset to Defaults</button>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- Bottom dissolve control -->
+  <div class="bottom-bar">
+    <label class="dissolve-wrap">
+      <span class="muted">Dissolve</span>
+      <input type="range" id="dissolve-slider" min="0.1" max="3" step="0.1" value="1"/>
+      <span id="dissolve-label">1.0s</span>
+    </label>
+    <span class="shortcut-hint">B = background cue &nbsp;·&nbsp; L = lighting cue &nbsp;·&nbsp; F = fullscreen LED &nbsp;·&nbsp; Space = fade to black</span>
+  </div>
+
+</div>
+
+<!-- EDIT CUE MODAL -->
+<div id="edit-cue-modal" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-title">Edit Lighting Cues</div>
+    <div class="modal-scene" id="modal-scene-name"></div>
+    <div id="modal-cue-rows"></div>
+    <button class="modal-btn-add" id="modal-add-row">+ Add Cue</button>
+    <div class="modal-buttons">
+      <button class="modal-btn-cancel" id="modal-cancel">Cancel</button>
+      <button class="modal-btn-save" id="modal-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
