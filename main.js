@@ -215,6 +215,18 @@ function registerIPC() {
   ipcMain.handle('activate-license', (_, token) => activateLicense(token))
   ipcMain.handle('finalize-license', (_, opts) => finalizeLicense(opts))
   ipcMain.handle('get-videos', () => getLocalVideos())
+  ipcMain.handle('send-to-led', (_, data) => {
+    if (!ledWindow) return
+    ledWindow.webContents.send('led-command', data)
+  })
+  ipcMain.handle('open-led-window', () => {
+    // Always destroy and recreate so display detection runs fresh each time
+    if (ledWindow && !ledWindow.isDestroyed()) {
+      ledWindow.destroy()
+    }
+    createLedWindow()
+    return { success: true }
+  })
   ipcMain.handle('load-show-folder', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ['openDirectory'] })
     if (canceled) return null
@@ -275,6 +287,20 @@ function registerIPC() {
   ipcMain.handle('start-media-server', (_, folderPath) => startMediaServer(folderPath))
 
   const COLOR_SETTINGS_FILE = path.join(CONFIG_DIR, 'color-settings.json')
+  const APP_SETTINGS_FILE = path.join(CONFIG_DIR, 'app-settings.json')
+  ipcMain.handle('get-app-settings', () => {
+    ensureDirs()
+    try {
+      if (!fs.existsSync(APP_SETTINGS_FILE)) return {}
+      return JSON.parse(fs.readFileSync(APP_SETTINGS_FILE, 'utf8'))
+    } catch { return {} }
+  })
+  ipcMain.handle('save-app-settings', (_, data) => {
+    ensureDirs()
+    try { fs.writeFileSync(APP_SETTINGS_FILE, JSON.stringify(data, null, 2)); return { success: true } }
+    catch (e) { return { success: false, error: e.message } }
+  })
+
   ipcMain.handle('load-color-settings', () => {
     ensureDirs()
     try {
@@ -342,27 +368,42 @@ function registerIPC() {
     }
   })
 
-  ipcMain.handle('load-bundled-show', (_, packId) => {
+  ipcMain.handle('load-bundled-show', async (_, packId) => {
     ensureDirs()
     const ids = Array.isArray(packId) ? packId : [packId]
     const isJr = ids.some(id => id === 'shrek-jr' || id.endsWith('.JR') || id.endsWith('_JR'))
-    const showFolder  = isJr ? 'shrek-jr' : 'shrek'
-    const bundledPath = path.join(__dirname, 'renderer', 'shows', showFolder, 'cues.json')
-    const localPath   = path.join(VIDEOS_DIR, 'cues.json')
-    const cuesPath    = fs.existsSync(localPath) ? localPath : bundledPath
-    if (!fs.existsSync(cuesPath)) return { success: false, error: 'Show data not found' }
+    const showId    = isJr ? 'shrek-jr' : 'shrek-adult'
+    const cachePath = path.join(CONFIG_DIR, `cues-${showId}.json`)
+
+    // Try to fetch fresh cues from server
     try {
-      const cues = JSON.parse(fs.readFileSync(cuesPath, 'utf8'))
-      if (!fs.existsSync(localPath)) fs.copyFileSync(bundledPath, localPath)
-      return { success: true, cues, folderPath: VIDEOS_DIR }
+      const res = await fetch(`https://showrunner-backend-zoen.onrender.com/cues/${showId}`)
+      if (res.ok) {
+        const text = await res.text()
+        fs.writeFileSync(cachePath, text)
+        return { success: true, cues: JSON.parse(text), folderPath: VIDEOS_DIR }
+      }
     } catch (e) {
-      return { success: false, error: e.message }
+      console.log('Could not fetch cues from server, falling back to cache:', e.message)
     }
+
+    // Fall back to cached copy
+    if (fs.existsSync(cachePath)) {
+      try {
+        const cues = JSON.parse(fs.readFileSync(cachePath, 'utf8'))
+        return { success: true, cues, folderPath: VIDEOS_DIR }
+      } catch (e) {
+        return { success: false, error: 'Cached show data is corrupted.' }
+      }
+    }
+
+    return { success: false, error: 'Show data not available. Please check your internet connection.' }
   })
 }
 
 let mainWindow
 let ledWindow
+let isQuitting = false
 
 function buildMenu() {
   const template = [
@@ -406,6 +447,44 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+function createLedWindow() {
+  const { screen } = require('electron')
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const allDisplays = screen.getAllDisplays()
+  const externalDisplay = allDisplays.find(d => d.id !== primaryDisplay.id)
+
+  if (externalDisplay) {
+    const { x, y, width, height } = externalDisplay.bounds
+    ledWindow = new BrowserWindow({
+      x, y, width, height,
+      frame: false, alwaysOnTop: true, backgroundColor: '#000000', skipTaskbar: true,
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), nodeIntegration: false, contextIsolation: true, webSecurity: false, backgroundThrottling: false }
+    })
+    ledWindow.loadFile(path.join(__dirname, 'renderer', 'led.html'))
+    ledWindow.setAlwaysOnTop(true, 'screen-saver')
+    ledWindow.webContents.once('did-finish-load', () => {
+      ledWindow.setFullScreen(true)
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('led-window-ready')
+      }
+    })
+  } else {
+    // No external display — create a moveable window on primary with a notice
+    ledWindow = new BrowserWindow({
+      width: 854, height: 480,
+      frame: true, backgroundColor: '#000000',
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), nodeIntegration: false, contextIsolation: true, webSecurity: false, backgroundThrottling: false }
+    })
+    ledWindow.loadFile(path.join(__dirname, 'renderer', 'led.html'))
+    ledWindow.webContents.once('did-finish-load', () => {
+      ledWindow.webContents.send('no-external-display')
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('led-window-ready')
+      }
+    })
+  }
+}
+
 function createWindows() {
   mainWindow = new BrowserWindow({
     width: 1600, height: 1000, minWidth: 900, minHeight: 600,
@@ -416,24 +495,17 @@ function createWindows() {
   })
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'))
 
-  const displays = require('electron').screen.getAllDisplays()
-  const externalDisplay = displays.find(d => d.bounds.x !== 0 || d.bounds.y !== 0)
-
-  if (externalDisplay) {
-    const { x, y, width, height } = externalDisplay.bounds
-
-    ledWindow = new BrowserWindow({
-      x, y, width, height,
-      frame: false, alwaysOnTop: true, backgroundColor: '#000000', skipTaskbar: true,
-      webPreferences: { preload: path.join(__dirname, 'preload.js'), nodeIntegration: false, contextIsolation: true, webSecurity: false, backgroundThrottling: false }
-    })
-    ledWindow.loadFile(path.join(__dirname, 'renderer', 'led.html'))
-    ledWindow.setAlwaysOnTop(true, 'screen-saver')
+  // Auto-open LED window if external display is already connected at launch
+  const { screen } = require('electron')
+  const primaryDisplay = screen.getPrimaryDisplay()
+  if (screen.getAllDisplays().find(d => d.id !== primaryDisplay.id)) {
+    createLedWindow()
   }
 
-  ipcMain.handle('send-to-led', (_, data) => {
-    if (!ledWindow) return
-    ledWindow.webContents.send('led-command', data)
+  // Auto-open LED window whenever a display is plugged in
+  screen.on('display-added', () => {
+    if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
+    setTimeout(() => createLedWindow(), 500) // small delay lets OS register the display
   })
 
   // Heartbeat — keeps video alive when macOS suspends renderer processes
@@ -456,6 +528,15 @@ app.whenReady().then(() => {
   registerIPC()
   createWindows()
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindows() })
+})
+
+app.on('before-quit', (e) => {
+  if (!isQuitting && ledWindow && !ledWindow.isDestroyed()) {
+    e.preventDefault()
+    isQuitting = true
+    ledWindow.webContents.send('led-command', { type: 'black', dissolve: 0 })
+    setTimeout(() => app.quit(), 200)
+  }
 })
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })

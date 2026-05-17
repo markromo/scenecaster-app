@@ -23,6 +23,11 @@ contextBridge.exposeInMainWorld('showrunner', {
   onKeepAlive:        (cb)         => ipcRenderer.on('keep-alive', () => cb()),
   ledVideoReady:      ()           => ipcRenderer.send('led-video-ready'),
   onShowActivate:     (cb)         => ipcRenderer.on('show-activate', () => cb()),
+  openLedWindow:      ()           => ipcRenderer.invoke('open-led-window'),
+  onNoExternalDisplay:(cb)         => ipcRenderer.on('no-external-display', () => cb()),
+  onLedWindowReady:   (cb)         => ipcRenderer.on('led-window-ready', () => cb()),
+  getAppSettings:     ()           => ipcRenderer.invoke('get-app-settings'),
+  saveAppSettings:    (data)       => ipcRenderer.invoke('save-app-settings', data),
   onDownloadProgress: (cb)         => {
     ipcRenderer.removeAllListeners('download-progress')
     ipcRenderer.on('download-progress', (_, data) => cb(data))

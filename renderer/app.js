@@ -46,6 +46,7 @@ const el = {
   dissolveSlider: document.getElementById('dissolve-slider'),
   dissolveLabel: document.getElementById('dissolve-label'),
   btnColorToggle: document.getElementById('btn-color-toggle'),
+  btnRearProjection: document.getElementById('btn-rear-projection'),
   colorPanel: document.getElementById('color-panel'),
   ccBrightness: document.getElementById('cc-brightness'),
   ccContrast: document.getElementById('cc-contrast'),
@@ -853,7 +854,47 @@ window.showrunner.onShowActivate(() => {
   showScreen('activate')
 })
 
+// ── Rear Projection Mode ────────────────────────────────────────────────────────
+let appSettings = {}
+
+function updateRearProjectionBtn(on) {
+  if (on) {
+    el.btnRearProjection.style.background = 'var(--orange)'
+    el.btnRearProjection.style.color = '#fff'
+    el.btnRearProjection.style.borderColor = 'transparent'
+  } else {
+    el.btnRearProjection.style.background = ''
+    el.btnRearProjection.style.color = ''
+    el.btnRearProjection.style.borderColor = ''
+  }
+}
+
+async function initAppSettings() {
+  appSettings = await window.showrunner.getAppSettings()
+  updateRearProjectionBtn(!!appSettings.rearProjection)
+  if (appSettings.rearProjection) window.showrunner.sendToLed({ type: 'rear-projection', enabled: true })
+}
+
+el.btnRearProjection.addEventListener('click', () => {
+  appSettings.rearProjection = !appSettings.rearProjection
+  const on = appSettings.rearProjection
+  updateRearProjectionBtn(on)
+  window.showrunner.sendToLed({ type: 'rear-projection', enabled: on })
+  window.showrunner.saveAppSettings(appSettings)
+})
+
+// When LED window (re)opens, re-apply state so operator never has to click twice
+window.showrunner.onLedWindowReady(() => {
+  if (appSettings.rearProjection) {
+    window.showrunner.sendToLed({ type: 'rear-projection', enabled: true })
+  }
+  if (state.backdropIndex >= 0) {
+    playCurrentBackdrop()
+  }
+})
+
 // ── Boot ────────────────────────────────────────────────────────────────────────
 // Ping backend immediately so Render wakes up before we need the manifest
 window.showrunner.fetchManifest().catch(() => {})
+initAppSettings()
 initLicense()
