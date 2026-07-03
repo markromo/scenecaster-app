@@ -50,9 +50,15 @@ function makeFilter(b, c, h, s) {
 function crossfadeTo(src, dissolve, looping, colorSettings) {
   const { wrap: inWrap, vid: inVid } = getInactive()
   const { wrap: outWrap, vid: outVid } = getActive()
-  // Apply new scene's color to incoming wrap immediately — outWrap keeps its own filter throughout
-  if (colorSettings) {
+  // Apply color to incoming wrap immediately — outWrap keeps its own filter throughout
+  if (looping) {
+    // Loop dissolve — always inherit whatever filter is currently on the active wrap,
+    // including any live slider adjustments made after the scene started playing
+    inWrap.style.filter = outWrap.style.filter
+  } else if (colorSettings) {
     inWrap.style.filter = makeFilter(colorSettings.brightness, colorSettings.contrast, colorSettings.hue, colorSettings.saturation)
+  } else {
+    inWrap.style.filter = ''
   }
 
   outVid.ontimeupdate = null
@@ -163,10 +169,7 @@ window.showrunner.onLedCommand(({ type, src, dissolve, loop, brightness, contras
     const { wrap: activeWrap } = getActive()
     activeWrap.style.filter = makeFilter(brightness, contrast, hue, saturation)
   }
-  if (type === 'fullscreen') {
-    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.()
-  }
-  if (type === 'rear-projection') {
+if (type === 'rear-projection') {
     document.body.style.transform = enabled ? 'scaleX(-1)' : ''
   }
 })

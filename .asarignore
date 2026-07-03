@@ -1,0 +1,11 @@
+node_modules
+dist
+app.asar
+electron
+showrunner
+PROGRESS.md
+package-lock.json
+.git
+*.dmg
+*.exe
+*.zip

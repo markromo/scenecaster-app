@@ -30,7 +30,6 @@
         }
       ]
     },
-    "afterSign": "scripts/notarize.js",
     "win": {
       "target": [
         {
@@ -45,6 +44,7 @@
       "main.js",
       "preload.js",
       "renderer/**/*",
+      "!renderer/shows/**/*",
       "!scripts/**/*"
     ]
   },

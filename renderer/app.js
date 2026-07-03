@@ -212,7 +212,7 @@ function showDateError(msg) { el.dateError.textContent = msg; el.dateError.class
 
 // ── Player start (dev mode / fallback) ─────────────────────────────────────────
 function startPlayer(payload, daysRemaining) {
-  if (payload?.p) el.topbarShow.textContent = payload.p === 'shrek-jr' ? 'Shrek the Musical Jr.' : 'Shrek the Musical'
+  if (payload?.showName) el.topbarShow.textContent = payload.showName
   updateDaysBadge(daysRemaining)
   showScreen('player')
 }
@@ -340,7 +340,7 @@ async function mountShow(cues, folderPath, payload, daysRemaining) {
   // Determine which scenes this license unlocks
   const ownedPackIds = Array.isArray(payload?.p) ? payload.p
                      : payload?.p ? [payload.p] : null
-  const isFullShow = !ownedPackIds || ownedPackIds.some(id => ['shrek-adult', 'shrek-jr', 'shrek-full'].includes(id))
+  const isFullShow = !ownedPackIds || ownedPackIds.some(id => ['-adult', '-jr', '-full'].some(s => id.endsWith(s)))
 
   cues.acts.forEach((act, ai) => {
     act.scenes.forEach((scene, si) => {
@@ -369,7 +369,7 @@ async function mountShow(cues, folderPath, payload, daysRemaining) {
 
   el.topbarShow.textContent = cues.show?.title || cues.show
   if (payload?.p) {
-    el.topbarShow.textContent = cues.show?.title || (payload.p === 'shrek-jr' ? 'Shrek the Musical Jr.' : 'Shrek the Musical')
+    el.topbarShow.textContent = payload.showName || cues.show?.title || cues.show
   }
   updateDaysBadge(daysRemaining)
   // Load saved color settings from disk
@@ -840,7 +840,6 @@ document.addEventListener('keydown', e => {
     case 'KeyB': e.preventDefault(); advanceBackdrop(); break
     case 'KeyL': e.preventDefault(); advanceLighting(); break
     case 'Space': e.preventDefault(); el.btnBlack.click(); break
-    case 'KeyF': e.preventDefault(); window.showrunner.sendToLed({ type: 'fullscreen' }); break
   }
 })
 

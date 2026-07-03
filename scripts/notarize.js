@@ -7,14 +7,10 @@ exports.default = async function(context) {
 
   const appName = context.packager.appInfo.productFilename
   const appPath = path.join(appOutDir, `${appName}.app`)
-  const zipPath = '/tmp/SceneCaster-notarize.zip'
 
-  console.log(`\n📦 Zipping app for notarization: ${appPath}`)
-  execSync(`ditto -c -k --keepParent "${appPath}" "${zipPath}"`)
-
-  console.log('🍎 Submitting to Apple for notarization (this takes a few minutes)...')
+  console.log(`\n🍎 Submitting app directly to Apple for notarization: ${appPath}`)
   execSync(
-    `xcrun notarytool submit "${zipPath}" --keychain-profile "SceneCaster-Notarize" --wait`,
+    `xcrun notarytool submit "${appPath}" --keychain-profile "SceneCaster-Notarize" --wait`,
     { stdio: 'inherit' }
   )
 

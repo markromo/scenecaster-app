@@ -105,8 +105,16 @@ function verifyJWT(token) {
 
 function showNameFromPackId(p) {
   const id = Array.isArray(p) ? p[0] : p
-  if (id === 'shrek-jr') return 'Shrek the Musical Jr.'
-  return 'Shrek the Musical'
+  if (!id) return 'this production'
+  // Full show pack: "frozen-adult" → "Frozen (Adult)", "shrek-jr" → "Shrek (Jr.)"
+  const match = id.match(/^(.+)-(adult|jr|full)$/i)
+  if (match) {
+    const show = match[1].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+    if (match[2].toLowerCase() === 'jr') return `${show} Jr.`
+    return show
+  }
+  // À la carte: use filename prefix as show name
+  return id.split('_')[0].replace(/\b\w/g, c => c.toUpperCase())
 }
 
 function checkLicense() {
@@ -371,8 +379,20 @@ function registerIPC() {
   ipcMain.handle('load-bundled-show', async (_, packId) => {
     ensureDirs()
     const ids = Array.isArray(packId) ? packId : [packId]
-    const isJr = ids.some(id => id === 'shrek-jr' || id.endsWith('.JR') || id.endsWith('_JR'))
-    const showId    = isJr ? 'shrek-jr' : 'shrek-adult'
+
+    // Derive showId from pack IDs — works for any show, not just Shrek
+    let showId
+    const fullPack = ids.find(id => id.endsWith('-adult') || id.endsWith('-jr') || id.endsWith('-full'))
+    if (fullPack) {
+      // Full show pack: use directly; normalize legacy 'shrek-full' → 'shrek-adult'
+      showId = fullPack.endsWith('-full') ? 'shrek-adult' : fullPack
+    } else {
+      // À la carte scene filename (e.g. "Frozen_Ice_Palace", "Shrek_Open.JR")
+      const isJr = ids.some(id => id.endsWith('.JR') || id.endsWith('_JR'))
+      const prefix = ids[0].split('_')[0].toLowerCase()
+      showId = `${prefix}-${isJr ? 'jr' : 'adult'}`
+    }
+
     const cachePath = path.join(CONFIG_DIR, `cues-${showId}.json`)
 
     // Try to fetch fresh cues from server
@@ -463,7 +483,11 @@ function createLedWindow() {
     ledWindow.loadFile(path.join(__dirname, 'renderer', 'led.html'))
     ledWindow.setAlwaysOnTop(true, 'screen-saver')
     ledWindow.webContents.once('did-finish-load', () => {
-      ledWindow.setFullScreen(true)
+      // Delay gives macOS time to settle the window on the external display before
+      // requesting fullscreen — improves reliability across different display setups
+      setTimeout(() => {
+        if (ledWindow && !ledWindow.isDestroyed()) ledWindow.setFullScreen(true)
+      }, 500)
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('led-window-ready')
       }

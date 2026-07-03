@@ -106,7 +106,7 @@
           "id": "1-6",
           "scene_label": "Act One — Scene Six",
           "backdrop": {
-            "file": "Shrek_Cave.Ext.mp4",
+            "file": "Shrek_Dragons.Keep.mp4",
             "label": "Dragon's Keep — Exterior",
             "repeat": false,
             "trigger": "Trigger: Donkey: \"Uhhh... no, I'm good. Waiting is fine. But hurry back!\""
@@ -121,7 +121,7 @@
           "id": "1-7",
           "scene_label": "Act One — Scene Seven",
           "backdrop": {
-            "file": "Shrek_Dragons.Keep.mp4",
+            "file": "Shrek_Holding.Chamber.mp4",
             "label": "Dragon's Keep — Interior",
             "repeat": false,
             "trigger": "Trigger: End of song \"Forever\" (After applause)"
@@ -151,8 +151,8 @@
           "id": "1-9",
           "scene_label": "Act One — Scene Nine",
           "backdrop": {
-            "file": "Shrek_Cave.Int.mp4",
-            "label": "Rocky Cave Camp — Night",
+            "file": "Shrek_Cave.Ext.mp4",
+            "label": "A Cave for Camp",
             "repeat": false,
             "trigger": "Trigger: Storyteller 3: \"By day, one way, by night another - this shall be the norm, until you find true love's first kiss and then take love's true form. Sshhh...\""
           },
