@@ -5,6 +5,7 @@ const CC_DEFAULTS = { brightness: 100, contrast: 100, hue: 0, saturation: 100 }
 const state = {
   show: null,
   folderPath: null,
+  showId: null,      // stable id for this show — keys the custom-layout overlay + color settings
   mediaPort: null,
   backdropIndex: -1,
   lightingIndex: -1,
@@ -12,7 +13,7 @@ const state = {
   playedScenes: new Set(),
   dissolveTime: 1.0,
   allScenes: [],
-  colorSettings: {}, // keyed by scene flat index, holds per-scene color correction
+  colorSettings: {}, // keyed by per-scene instanceId (legacy: video filename), holds color correction
 }
 
 // DOM
@@ -47,6 +48,7 @@ const el = {
   dissolveLabel: document.getElementById('dissolve-label'),
   btnColorToggle: document.getElementById('btn-color-toggle'),
   btnRearProjection: document.getElementById('btn-rear-projection'),
+  btnEditModeLock: document.getElementById('btn-edit-mode-lock'),
   colorPanel: document.getElementById('color-panel'),
   ccBrightness: document.getElementById('cc-brightness'),
   ccContrast: document.getElementById('cc-contrast'),
@@ -283,7 +285,7 @@ async function checkAndDownload(payload, daysRemaining) {
 async function autoLoadShow(payload, daysRemaining) {
   const result = await window.showrunner.loadBundledShow(payload.p)
   if (!result.success) { startPlayer(payload, daysRemaining); return }
-  await mountShow(result.cues, result.folderPath, payload, daysRemaining)
+  await mountShow(result.cues, result.folderPath, payload, daysRemaining, result.showId)
 }
 
 // ── Download button ─────────────────────────────────────────────────────────────
@@ -329,42 +331,129 @@ document.getElementById('btn-launch-show').addEventListener('click', async () =>
   await autoLoadShow(_dlPayload, _dlDays)
 })
 
+// ── Custom-layout merge helpers ─────────────────────────────────────────────────
+// Master cues are never mutated. state.allScenes is rebuilt each mount by walking
+// the custom "order" overlay (or natural master order when none exists yet) and
+// resolving each entry to a flattened scene the UI/playback already understands.
+function normalizeLightingCues(lighting) {
+  if (Array.isArray(lighting?.cues)) return lighting.cues
+  if (lighting?.cue_code) return [{ cue_code: lighting.cue_code, trigger: lighting.trigger || '' }]
+  return []
+}
+
+function flattenScene(masterScene, meta, override, skip) {
+  // Sparse override wins per-field; every untouched field still flows from master,
+  // so our upstream cues fixes keep reaching the operator.
+  const backdrop_trigger = (override?.backdrop && 'trigger' in override.backdrop)
+    ? override.backdrop.trigger
+    : masterScene.backdrop?.trigger
+  const lighting_cues = (override?.lighting && Array.isArray(override.lighting.cues))
+    ? override.lighting.cues
+    : normalizeLightingCues(masterScene.lighting)
+  return {
+    ...masterScene,
+    kind: 'master',
+    sceneRef: { kind: 'master', sceneId: masterScene.id },
+    instanceId: masterScene.id,
+    actNum: meta.actNum,
+    originalPosition: meta.originalPosition,
+    originalCueNumber: masterScene.id,
+    skip: !!skip,
+    name: masterScene.backdrop?.label || masterScene.scene_label,
+    video_file: masterScene.backdrop?.file,
+    backdrop_trigger,
+    mti_page: masterScene.mti_pages,
+    lighting_cues,
+  }
+}
+
+function flattenCustomScene(cs) {
+  return {
+    kind: 'custom',
+    sceneRef: { kind: 'custom', id: cs.id },
+    instanceId: cs.id,
+    actNum: null,
+    originalPosition: null,
+    originalCueNumber: null,
+    skip: false,
+    renamable: true,
+    origin: cs.origin,
+    name: cs.name || cs.backdrop?.label || 'Custom Scene',
+    video_file: cs.backdrop?.file || null,
+    backdrop_trigger: cs.backdrop?.trigger || '',
+    mti_page: cs.mti_pages || null,
+    lighting_cues: normalizeLightingCues(cs.lighting),
+  }
+}
+
+function flattenBlackout(bo) {
+  return {
+    kind: 'blackout',
+    sceneRef: { kind: 'blackout', id: bo.id },
+    instanceId: bo.id,
+    actNum: null,
+    originalPosition: null,
+    originalCueNumber: null,
+    skip: false,
+    name: bo.label || 'Blackout',
+    video_file: null,          // null → playback sends a black command instead of a video
+    backdrop_trigger: '',
+    mti_page: null,
+    lighting_cues: [],
+  }
+}
+
 // ── Mount show (shared by auto-load and manual load) ────────────────────────────
-async function mountShow(cues, folderPath, payload, daysRemaining) {
+async function mountShow(cues, folderPath, payload, daysRemaining, showId) {
   state.show = cues
   state.folderPath = folderPath
+  state.showId = showId || null
   state.mediaPort = await window.showrunner.startMediaServer(folderPath)
   state.backdropIndex = -1; state.lightingIndex = -1; state.lightingSubIndex = 0
   state.playedScenes = new Set(); state.allScenes = []
 
-  // Determine which scenes this license unlocks
+  // Ownership predicate — à la carte licenses only unlock purchased scenes.
+  // Applied per-entry during the merge below (not as a pre-filter) so it composes
+  // cleanly with a custom order.
   const ownedPackIds = Array.isArray(payload?.p) ? payload.p
                      : payload?.p ? [payload.p] : null
   const isFullShow = !ownedPackIds || ownedPackIds.some(id => ['-adult', '-jr', '-full'].some(s => id.endsWith(s)))
+  function isOwned(masterScene) {
+    if (isFullShow) return true
+    const videoId = (masterScene.backdrop?.file || '').replace('.mp4', '')
+    return !videoId || ownedPackIds.includes(videoId)
+  }
 
-  cues.acts.forEach((act, ai) => {
-    act.scenes.forEach((scene, si) => {
-      // For à la carte licenses, only include scenes the customer purchased
-      if (!isFullShow) {
-        const videoId = (scene.backdrop?.file || '').replace('.mp4', '')
-        if (videoId && !ownedPackIds.includes(videoId)) return
-      }
-
-      let lighting_cues = []
-      if (Array.isArray(scene.lighting?.cues)) {
-        lighting_cues = scene.lighting.cues
-      } else if (scene.lighting?.cue_code) {
-        lighting_cues = [{ cue_code: scene.lighting.cue_code, trigger: scene.lighting.trigger || '' }]
-      }
-      state.allScenes.push({
-        ...scene, actIndex: ai, sceneIndex: si, actNum: act.act,
-        name: scene.backdrop?.label || scene.scene_label,
-        video_file: scene.backdrop?.file,
-        backdrop_trigger: scene.backdrop?.trigger,
-        mti_page: scene.mti_pages,
-        lighting_cues,
-      })
+  // Index master scenes by their stable id, retaining original position (for the
+  // later cue sheet's "original cue number" vs. current display position).
+  const masterById = new Map()
+  let pos = 0
+  cues.acts.forEach(act => {
+    act.scenes.forEach(scene => {
+      masterById.set(scene.id, { scene, actNum: act.act, originalPosition: pos++ })
     })
+  })
+
+  // Custom overlay (null when the operator hasn't customized this show yet).
+  const layout = state.showId ? await window.showrunner.getCustomLayout({ showId: state.showId }) : null
+
+  const orderEntries = (layout?.order && layout.order.length)
+    ? layout.order
+    : Array.from(masterById.values()).map(m => ({ kind: 'master', sceneId: m.scene.id }))
+
+  orderEntries.forEach(entry => {
+    if (entry.kind === 'master') {
+      const m = masterById.get(entry.sceneId)
+      if (!m) return                  // scene id no longer exists upstream — drop silently
+      if (!isOwned(m.scene)) return    // à la carte filter, applied at resolution time
+      state.allScenes.push(flattenScene(m.scene, m, layout?.overrides?.[entry.sceneId], entry.skip))
+    } else if (entry.kind === 'custom') {
+      const cs = layout?.customScenes?.[entry.id]
+      if (cs) state.allScenes.push(flattenCustomScene(cs))
+    } else if (entry.kind === 'blackout') {
+      const bo = layout?.blackouts?.[entry.id]
+      if (bo) state.allScenes.push(flattenBlackout(bo))
+    }
   })
 
   el.topbarShow.textContent = cues.show?.title || cues.show
@@ -387,7 +476,9 @@ function renderSceneList() {
   el.sceneList.innerHTML = ''
   let lastAct = null
   state.allScenes.forEach((scene, flatIndex) => {
-    if (scene.actNum !== lastAct) {
+    // Only master scenes carry an act number; custom/blackout entries slot in
+    // under the current act without spawning a spurious divider.
+    if (scene.actNum != null && scene.actNum !== lastAct) {
       const div = document.createElement('div')
       div.className = 'act-divider'
       div.textContent = `Act ${scene.actNum}`
@@ -395,10 +486,11 @@ function renderSceneList() {
       lastAct = scene.actNum
     }
     const item = document.createElement('div')
-    item.className = `scene-item${flatIndex === state.backdropIndex ? ' active' : ''}`
+    item.className = `scene-item${flatIndex === state.backdropIndex ? ' active' : ''}${scene.skip ? ' skipped' : ''}`
     const triggerSnippet = scene.backdrop_trigger
       ? `<div class="scene-trigger">${scene.backdrop_trigger}</div>` : ''
-    item.innerHTML = `<div class="scene-name">${escHtml(scene.name)}</div>${triggerSnippet}<div class="scene-page">p.${scene.mti_page}</div>`
+    const pageSnippet = scene.mti_page ? `<div class="scene-page">p.${scene.mti_page}</div>` : ''
+    item.innerHTML = `<div class="scene-name">${escHtml(scene.name)}</div>${triggerSnippet}${pageSnippet}`
     item.addEventListener('click', () => jumpToScene(flatIndex))
     el.sceneList.appendChild(item)
   })
@@ -418,8 +510,12 @@ function scrollSceneIntoView(index) {
 // ── B key — backdrop advance ────────────────────────────────────────────────────
 function advanceBackdrop() {
   if (!state.allScenes.length) return
+  // Skip past any scenes flagged skip — they stay in the list but never play.
+  let next = state.backdropIndex + 1
+  while (next < state.allScenes.length && state.allScenes[next]?.skip) next++
+  if (next >= state.allScenes.length) return  // nothing playable ahead — stay put
   if (state.backdropIndex >= 0) state.playedScenes.add(state.backdropIndex)
-  state.backdropIndex = Math.min(state.backdropIndex + 1, state.allScenes.length - 1)
+  state.backdropIndex = next
   state.lightingIndex = state.backdropIndex; state.lightingSubIndex = 0
   playCurrentBackdrop(); updateCenterPanel(); updateNextPanel(); renderSceneList()
   scrollSceneIntoView(state.backdropIndex)
@@ -427,9 +523,16 @@ function advanceBackdrop() {
 
 function playCurrentBackdrop() {
   if (state.backdropIndex < 0 || !state.allScenes.length) return
-  loadColorForScene(state.backdropIndex)
   const scene = state.allScenes[state.backdropIndex]
-  if (!scene || !scene.video_file) return
+  if (!scene) return
+  // Blackout entries have no video — advancing onto one goes to black.
+  if (scene.kind === 'blackout') {
+    const cmd = { type: 'black', dissolve: state.dissolveTime }
+    window.showrunner.sendToLed(cmd); previewCommand(cmd)
+    return
+  }
+  loadColorForScene(state.backdropIndex)
+  if (!scene.video_file) return
   const videoPath = `${state.folderPath}/${scene.video_file}`
   const loop = true
   const cc = getColorForScene(state.backdropIndex)
@@ -592,7 +695,7 @@ document.getElementById('modal-save').addEventListener('click', () => {
   })
   scene.lighting_cues = newCues
   state.lightingSubIndex = Math.min(state.lightingSubIndex, Math.max(0, newCues.length - 1))
-  window.showrunner.saveLightingCue({ folderPath: state.folderPath, actIndex: scene.actIndex, sceneIndex: scene.sceneIndex, cues: newCues })
+  window.showrunner.saveLightingCue({ showId: state.showId, sceneRef: scene.sceneRef, cues: newCues })
   modal.classList.add('hidden'); updateCenterPanel(); updateNextPanel()
 })
 
@@ -659,9 +762,8 @@ function startTriggerEdit() {
     el.btnTriggerEdit.textContent = '✏️ Edit'
     updateNextPanel()
     window.showrunner.saveBackdropTrigger({
-      folderPath: state.folderPath,
-      actIndex: scene.actIndex,
-      sceneIndex: scene.sceneIndex,
+      showId: state.showId,
+      sceneRef: scene.sceneRef,
       trigger: newHtml
     })
   }
@@ -735,12 +837,18 @@ el.btnTriggerEdit.addEventListener('click', () => {
 // ── Color correction ────────────────────────────────────────────────────────────
 
 function colorKey(index) {
-  return state.allScenes[index]?.video_file || null
+  // New writes key by per-scene instanceId so two scenes sharing a video file
+  // (e.g. a duplicated scene) get independent color correction.
+  return state.allScenes[index]?.instanceId || null
 }
 
 function getColorForScene(index) {
-  const key = colorKey(index)
-  return (key && state.colorSettings[key]) ? state.colorSettings[key] : { ...CC_DEFAULTS }
+  const scene = state.allScenes[index]
+  if (!scene) return { ...CC_DEFAULTS }
+  if (scene.instanceId && state.colorSettings[scene.instanceId]) return state.colorSettings[scene.instanceId]
+  // Backward-compat: installs from before the instanceId migration keyed by filename.
+  if (scene.video_file && state.colorSettings[scene.video_file]) return state.colorSettings[scene.video_file]
+  return { ...CC_DEFAULTS }
 }
 
 function makeColorFilter(s) {
@@ -825,8 +933,11 @@ el.ccHue.addEventListener('input', onColorSliderChange)
 el.ccSaturation.addEventListener('input', onColorSliderChange)
 
 document.getElementById('cc-reset').addEventListener('click', () => {
-  const key = colorKey(state.backdropIndex)
-  if (key) delete state.colorSettings[key]
+  const scene = state.allScenes[state.backdropIndex]
+  if (scene) {
+    if (scene.instanceId) delete state.colorSettings[scene.instanceId]
+    if (scene.video_file) delete state.colorSettings[scene.video_file] // clear any legacy filename-keyed entry too
+  }
   loadColorForScene(state.backdropIndex)
   updateColorIndicator()
   saveColorSettingsToDisk()
@@ -872,6 +983,7 @@ async function initAppSettings() {
   appSettings = await window.showrunner.getAppSettings()
   updateRearProjectionBtn(!!appSettings.rearProjection)
   if (appSettings.rearProjection) window.showrunner.sendToLed({ type: 'rear-projection', enabled: true })
+  updateEditModeLockBtn(!!appSettings.editModeLocked)
 }
 
 el.btnRearProjection.addEventListener('click', () => {
@@ -879,6 +991,35 @@ el.btnRearProjection.addEventListener('click', () => {
   const on = appSettings.rearProjection
   updateRearProjectionBtn(on)
   window.showrunner.sendToLed({ type: 'rear-projection', enabled: on })
+  window.showrunner.saveAppSettings(appSettings)
+})
+
+// ── Edit / Show mode lock ────────────────────────────────────────────────────
+// Show Mode locks the (upcoming) structural Custom-Mode actions — reorder, skip,
+// delete, upload, duplicate, rename — so nothing can be disturbed mid-performance.
+// It deliberately does NOT gate the existing trigger / lighting-cue text editors,
+// which stay usable live for quick fixes. isEditLocked() is the single source of
+// truth later phases check before any structural action.
+function isEditLocked() {
+  return !!appSettings.editModeLocked
+}
+
+function updateEditModeLockBtn(locked) {
+  el.btnEditModeLock.textContent = locked ? '🔒 Show Mode' : '🔓 Edit Mode'
+  if (locked) {
+    el.btnEditModeLock.style.background = 'var(--orange)'
+    el.btnEditModeLock.style.color = '#fff'
+    el.btnEditModeLock.style.borderColor = 'transparent'
+  } else {
+    el.btnEditModeLock.style.background = ''
+    el.btnEditModeLock.style.color = ''
+    el.btnEditModeLock.style.borderColor = ''
+  }
+}
+
+el.btnEditModeLock.addEventListener('click', () => {
+  appSettings.editModeLocked = !appSettings.editModeLocked
+  updateEditModeLockBtn(appSettings.editModeLocked)
   window.showrunner.saveAppSettings(appSettings)
 })
 

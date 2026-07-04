@@ -215,7 +215,59 @@ function loadShowFolder(folderPath) {
   const cuesPath = path.join(folderPath, 'cues.json')
   if (!fs.existsSync(cuesPath)) return { success: false, error: 'No cues.json found in folder' }
   const cues = JSON.parse(fs.readFileSync(cuesPath, 'utf8'))
-  return { success: true, cues, folderPath }
+  // Dev folder-loaded shows get a synthetic showId (prefixed to keep them
+  // visually distinct from bundled shows) so custom layouts persist for them too.
+  const showId = `folder-${slugify(cues.show?.title)}`
+  return { success: true, cues, folderPath, showId }
+}
+
+// ── Custom layout (Director's Custom Mode foundation) ────────────────────────
+// A per-show overlay stored SEPARATELY from the master cues cache, so the master
+// (cues-{showId}.json) is never mutated. Holds the scene order, sparse per-scene
+// overrides, uploaded/duplicated scenes, blackouts, and skip flags.
+function slugify(str) {
+  return String(str || 'show').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'show'
+}
+
+function customLayoutPath(showId) {
+  return path.join(CONFIG_DIR, `custom-layout-${showId}.json`)
+}
+
+function emptyLayout(showId) {
+  return { version: 1, showId, order: [], overrides: {}, customScenes: {}, blackouts: {} }
+}
+
+function getCustomLayout(showId) {
+  if (!showId) return null
+  ensureDirs()
+  const p = customLayoutPath(showId)
+  if (!fs.existsSync(p)) return null
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')) }
+  catch { return null } // a corrupted overlay must never crash the show
+}
+
+function saveCustomLayout(showId, layout) {
+  ensureDirs()
+  try {
+    const data = layout || emptyLayout(showId)
+    data.version = 1
+    data.showId = showId
+    fs.writeFileSync(customLayoutPath(showId), JSON.stringify(data, null, 2))
+    return { success: true }
+  } catch (e) { return { success: false, error: e.message } }
+}
+
+function resetCustomLayout(showId, mode) {
+  // Only 'full' touches disk: delete the overlay entirely. The master cues cache
+  // was never mutated, so deletion fully restores defaults AND removes any
+  // customer-added/duplicated scenes. 'position' is a renderer-only concern.
+  try {
+    if (mode === 'full') {
+      const p = customLayoutPath(showId)
+      if (fs.existsSync(p)) fs.unlinkSync(p)
+    }
+    return { success: true }
+  } catch (e) { return { success: false, error: e.message } }
 }
 
 function registerIPC() {
@@ -261,37 +313,49 @@ function registerIPC() {
     const data = fs.readFileSync(videoPath)
     return `data:${mime};base64,${data.toString('base64')}`
   })
-  ipcMain.handle('save-backdrop-trigger', (_, { folderPath, actIndex, sceneIndex, trigger }) => {
-    const cuesPath = path.join(folderPath, 'cues.json')
-    const data = JSON.parse(fs.readFileSync(cuesPath, 'utf8'))
-    if (!data.acts[actIndex].scenes[sceneIndex].backdrop) {
-      data.acts[actIndex].scenes[sceneIndex].backdrop = {}
+  // Trigger/lighting edits now write into the custom-layout overlay keyed by the
+  // scene's STABLE id (master scene.id, or a custom scene's own id) — never by
+  // array position, and never mutating the master cues cache. This also fixes a
+  // pre-existing bug where these wrote to folderPath's cues.json, which for real
+  // bundled shows is ~/.scenecaster/videos (has no cues.json) → silent failure.
+  ipcMain.handle('save-backdrop-trigger', (_, { showId, sceneRef, trigger }) => {
+    if (!showId || !sceneRef) return { success: false, error: 'Missing showId or sceneRef' }
+    const layout = getCustomLayout(showId) || emptyLayout(showId)
+    if (sceneRef.kind === 'master') {
+      layout.overrides[sceneRef.sceneId] = layout.overrides[sceneRef.sceneId] || {}
+      layout.overrides[sceneRef.sceneId].backdrop = layout.overrides[sceneRef.sceneId].backdrop || {}
+      layout.overrides[sceneRef.sceneId].backdrop.trigger = trigger
+    } else if (sceneRef.kind === 'custom') {
+      const cs = layout.customScenes[sceneRef.id]
+      if (!cs) return { success: false, error: 'Custom scene not found' }
+      cs.backdrop = cs.backdrop || {}
+      cs.backdrop.trigger = trigger
+    } else {
+      return { success: false, error: 'Unsupported sceneRef kind' }
     }
-    data.acts[actIndex].scenes[sceneIndex].backdrop.trigger = trigger
-    fs.writeFileSync(cuesPath, JSON.stringify(data, null, 2))
-    return { success: true }
+    return saveCustomLayout(showId, layout)
   })
 
-  ipcMain.handle('save-lighting-cue', (_, { folderPath, actIndex, sceneIndex, cues: newCues, cueCode, trigger }) => {
-    const cuesPath = path.join(folderPath, 'cues.json')
-    const data = JSON.parse(fs.readFileSync(cuesPath, 'utf8'))
-    if (!data.acts[actIndex].scenes[sceneIndex].lighting) {
-      data.acts[actIndex].scenes[sceneIndex].lighting = {}
-    }
-    const lighting = data.acts[actIndex].scenes[sceneIndex].lighting
-    if (newCues !== undefined) {
-      // Multi-cue format: write cues array, remove legacy flat fields
-      lighting.cues = newCues
-      delete lighting.cue_code
-      delete lighting.trigger
+  ipcMain.handle('save-lighting-cue', (_, { showId, sceneRef, cues: newCues }) => {
+    if (!showId || !sceneRef) return { success: false, error: 'Missing showId or sceneRef' }
+    const layout = getCustomLayout(showId) || emptyLayout(showId)
+    if (sceneRef.kind === 'master') {
+      layout.overrides[sceneRef.sceneId] = layout.overrides[sceneRef.sceneId] || {}
+      layout.overrides[sceneRef.sceneId].lighting = { cues: newCues || [] }
+    } else if (sceneRef.kind === 'custom') {
+      const cs = layout.customScenes[sceneRef.id]
+      if (!cs) return { success: false, error: 'Custom scene not found' }
+      cs.lighting = { cues: newCues || [] }
     } else {
-      // Legacy single-cue format
-      lighting.cue_code = cueCode
-      lighting.trigger = trigger
+      return { success: false, error: 'Unsupported sceneRef kind' }
     }
-    fs.writeFileSync(cuesPath, JSON.stringify(data, null, 2))
-    return { success: true }
+    return saveCustomLayout(showId, layout)
   })
+
+  ipcMain.handle('get-custom-layout', (_, { showId }) => getCustomLayout(showId))
+  ipcMain.handle('save-custom-layout', (_, { showId, layout }) => saveCustomLayout(showId, layout))
+  ipcMain.handle('reset-custom-layout', (_, { showId, mode }) => resetCustomLayout(showId, mode))
+
   ipcMain.handle('start-media-server', (_, folderPath) => startMediaServer(folderPath))
 
   const COLOR_SETTINGS_FILE = path.join(CONFIG_DIR, 'color-settings.json')
@@ -401,7 +465,7 @@ function registerIPC() {
       if (res.ok) {
         const text = await res.text()
         fs.writeFileSync(cachePath, text)
-        return { success: true, cues: JSON.parse(text), folderPath: VIDEOS_DIR }
+        return { success: true, cues: JSON.parse(text), folderPath: VIDEOS_DIR, showId }
       }
     } catch (e) {
       console.log('Could not fetch cues from server, falling back to cache:', e.message)
@@ -411,7 +475,7 @@ function registerIPC() {
     if (fs.existsSync(cachePath)) {
       try {
         const cues = JSON.parse(fs.readFileSync(cachePath, 'utf8'))
-        return { success: true, cues, folderPath: VIDEOS_DIR }
+        return { success: true, cues, folderPath: VIDEOS_DIR, showId }
       } catch (e) {
         return { success: false, error: 'Cached show data is corrupted.' }
       }
