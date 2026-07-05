@@ -528,7 +528,8 @@ function buildMenu() {
     {
       label: 'Edit',
       submenu: [
-        { role: 'undo' }, { role: 'redo' },
+        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('menu-undo') } },
+        { role: 'redo' },
         { type: 'separator' },
         { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }
       ]

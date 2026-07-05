@@ -371,7 +371,7 @@ function flattenScene(masterScene, meta, override, skip) {
   }
 }
 
-function flattenCustomScene(cs) {
+function flattenCustomScene(cs, skip) {
   return {
     kind: 'custom',
     sceneRef: { kind: 'custom', id: cs.id },
@@ -379,7 +379,7 @@ function flattenCustomScene(cs) {
     actNum: null,
     originalPosition: null,
     originalCueNumber: null,
-    skip: false,
+    skip: !!skip,
     renamable: true,
     origin: cs.origin,
     name: cs.name || cs.backdrop?.label || 'Custom Scene',
@@ -460,7 +460,7 @@ async function mountShow(cues, folderPath, payload, daysRemaining, showId) {
       state.allScenes.push(flattenScene(m.scene, m, layout?.overrides?.[entry.sceneId], entry.skip))
     } else if (entry.kind === 'custom') {
       const cs = layout?.customScenes?.[entry.id]
-      if (cs) state.allScenes.push(flattenCustomScene(cs))
+      if (cs) state.allScenes.push(flattenCustomScene(cs, entry.skip))
     } else if (entry.kind === 'blackout') {
       const bo = layout?.blackouts?.[entry.id]
       if (bo) state.allScenes.push(flattenBlackout(bo))
@@ -495,7 +495,10 @@ function orderFromScenes() {
       return s.skip ? { kind: 'master', sceneId: s.sceneRef.sceneId, skip: true }
                     : { kind: 'master', sceneId: s.sceneRef.sceneId }
     }
-    if (s.sceneRef.kind === 'custom') return { kind: 'custom', id: s.sceneRef.id }
+    if (s.sceneRef.kind === 'custom') {
+      return s.skip ? { kind: 'custom', id: s.sceneRef.id, skip: true }
+                    : { kind: 'custom', id: s.sceneRef.id }
+    }
     return { kind: 'blackout', id: s.sceneRef.id }
   })
 }
@@ -507,9 +510,30 @@ async function persistArrangement() {
   await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
 }
 
+// ── Undo (Cmd/Ctrl+Z) ────────────────────────────────────────────────────────
+// Snapshot the whole overlay before each structural edit; undo restores it.
+const _undoStack = []
+async function pushUndo() {
+  if (!state.showId) return
+  const cur = await window.showrunner.getCustomLayout({ showId: state.showId })
+  _undoStack.push(cur ? JSON.stringify(cur) : null)   // null = "no overlay yet"
+  if (_undoStack.length > 50) _undoStack.shift()
+}
+async function sceneUndo() {
+  if (isEditLocked() || !state.showId || !_undoStack.length) return
+  const prev = _undoStack.pop()
+  if (prev === null) {
+    await window.showrunner.resetCustomLayout({ showId: state.showId, mode: 'full' })
+  } else {
+    await window.showrunner.saveCustomLayout({ showId: state.showId, layout: JSON.parse(prev) })
+  }
+  await mountShow(state.show, state.folderPath, state.payload, state.daysRemaining, state.showId)
+}
+
 // Insert a blackout cue right after the current scene (or at the end).
 async function insertBlackout() {
   if (isEditLocked() || !state.showId) return
+  await pushUndo()
   const id = 'bo-' + crypto.randomUUID()
   const bo = { id, label: 'Blackout', createdAt: new Date().toISOString() }
   const at = state.backdropIndex >= 0 ? state.backdropIndex + 1 : state.allScenes.length
@@ -526,7 +550,8 @@ async function insertBlackout() {
 async function toggleSkip(flatIndex) {
   if (isEditLocked()) return
   const scene = state.allScenes[flatIndex]
-  if (!scene || scene.sceneRef.kind !== 'master') return
+  if (!scene || scene.sceneRef.kind === 'blackout') return  // any real scene can be skipped
+  await pushUndo()
   scene.skip = !scene.skip
   await persistArrangement()
   renderSceneList(); updateNextPanel()
@@ -538,6 +563,7 @@ async function moveSceneTo(from, to) {
   if (isEditLocked()) return
   const arr = state.allScenes
   if (from < 0 || from >= arr.length || from === to) return
+  await pushUndo()
   const curId = state.backdropIndex >= 0 ? arr[state.backdropIndex]?.instanceId : null
   const ligId = state.lightingIndex >= 0 ? arr[state.lightingIndex]?.instanceId : null
   const [item] = arr.splice(from, 1)
@@ -565,7 +591,7 @@ function openSceneMenu(flatIndex, anchor) {
   if (!scene) return
   const kind = scene.sceneRef.kind
   const items = []
-  if (kind === 'master') items.push([scene.skip ? 'Unskip' : 'Skip', () => toggleSkip(flatIndex)])
+  if (kind === 'master' || kind === 'custom') items.push([scene.skip ? 'Unskip' : 'Skip', () => toggleSkip(flatIndex)])
   if (kind === 'custom') items.push(['Rename', () => renameScene(flatIndex)])
   if (kind === 'master' || kind === 'custom') items.push(['Copy', () => duplicateScene(flatIndex)])
   items.push(['Delete', () => deleteScene(flatIndex)])
@@ -594,6 +620,7 @@ async function uploadScene() {
   if (isEditLocked() || !state.showId) return
   const files = await window.showrunner.importVideo()
   if (!files || !files.length) return
+  await pushUndo()
   const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
   layout.customScenes = layout.customScenes || {}
   let at = state.backdropIndex >= 0 ? state.backdropIndex + 1 : state.allScenes.length
@@ -622,6 +649,7 @@ async function renameScene(flatIndex) {
   if (!s || s.sceneRef.kind !== 'custom') return
   const next = window.prompt('Rename this scene:', s.name || '')
   if (next == null) return
+  await pushUndo()
   const name = next.trim() || s.name
   s.name = name
   const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
@@ -650,6 +678,7 @@ async function duplicateScene(flatIndex) {
   if (isEditLocked() || !state.showId) return
   const src = state.allScenes[flatIndex]
   if (!src || src.sceneRef.kind === 'blackout') return  // blackouts aren't duplicable
+  await pushUndo()
   const id = 'cs-' + crypto.randomUUID()
   const copyName = nextCopyName(src.name)
   const cs = {
@@ -685,6 +714,7 @@ async function deleteScene(flatIndex) {
   if (s.sceneRef.kind === 'custom') {
     if (!window.confirm(`Delete "${s.name}"?\n\nThis added/duplicated scene will be removed for good. (Your original show is unaffected — use Reset to Original to restore our scenes.)`)) return
   }
+  await pushUndo()
   state.allScenes.splice(flatIndex, 1)
   const fix = i => i > flatIndex ? i - 1 : (i === flatIndex ? -1 : i)
   state.backdropIndex = fix(state.backdropIndex)
@@ -1319,9 +1349,20 @@ el.btnResetShow.addEventListener('click', async () => {
     'Reset to Original?\n\nThis discards ALL customizations for this show — reordering, skipped scenes, blackouts, added or duplicated scenes, and edited triggers — and restores the original show exactly as e-llusion media provided it.\n\nThis cannot be undone.'
   )
   if (!ok) return
+  await pushUndo()
   await window.showrunner.resetCustomLayout({ showId: state.showId, mode: 'full' })
   // Re-mount from the (now empty) overlay → back to natural master order.
   await mountShow(state.show, state.folderPath, state.payload, state.daysRemaining, state.showId)
+})
+
+// Cmd/Ctrl+Z routed from the app menu: native text undo in a field, else scene undo.
+window.showrunner.onMenuUndo(() => {
+  const a = document.activeElement
+  if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable)) {
+    document.execCommand('undo')
+  } else {
+    sceneUndo()
+  }
 })
 
 // When LED window (re)opens, re-apply state so operator never has to click twice
