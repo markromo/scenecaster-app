@@ -6,7 +6,8 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
 .wrap { position: fixed; inset: 0; opacity: 0; }
-.wrap video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.wrap video, .wrap img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.wrap img { display: none; }
 </style>
 </head>
 <body>
@@ -16,19 +17,27 @@ html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
 </div>
 <div id="wrap-a" class="wrap" style="z-index:1">
   <video id="vid-a" playsinline></video>
+  <img id="img-a" alt=""/>
 </div>
 <div id="wrap-b" class="wrap" style="z-index:1">
   <video id="vid-b" playsinline></video>
+  <img id="img-b" alt=""/>
 </div>
 <script>
 const wrapA = document.getElementById('wrap-a')
 const wrapB = document.getElementById('wrap-b')
 const vidA  = document.getElementById('vid-a')
 const vidB  = document.getElementById('vid-b')
+const imgA  = document.getElementById('img-a')
+const imgB  = document.getElementById('img-b')
 let active  = 'a'
 
-function getActive()   { return active === 'a' ? { wrap: wrapA, vid: vidA } : { wrap: wrapB, vid: vidB } }
-function getInactive() { return active === 'a' ? { wrap: wrapB, vid: vidB } : { wrap: wrapA, vid: vidA } }
+function getActive()   { return active === 'a' ? { wrap: wrapA, vid: vidA, img: imgA } : { wrap: wrapB, vid: vidB, img: imgB } }
+function getInactive() { return active === 'a' ? { wrap: wrapB, vid: vidB, img: imgB } : { wrap: wrapA, vid: vidA, img: imgA } }
+
+// A wrap can hold either a looping video or a held still. Flip between them.
+function setVideoMode(w) { const v = w.querySelector('video'), i = w.querySelector('img'); i.style.display = 'none'; i.removeAttribute('src'); v.style.display = '' }
+function setStillMode(w) { const v = w.querySelector('video'), i = w.querySelector('img'); v.pause(); v.ontimeupdate = null; v.removeAttribute('src'); v.style.display = 'none'; i.style.display = '' }
 
 function fadeWrap(el, toOpacity, durationSec) {
   if (el._fadeTimer) { clearInterval(el._fadeTimer); el._fadeTimer = null }
@@ -50,6 +59,7 @@ function makeFilter(b, c, h, s) {
 function crossfadeTo(src, dissolve, looping, colorSettings) {
   const { wrap: inWrap, vid: inVid } = getInactive()
   const { wrap: outWrap, vid: outVid } = getActive()
+  setVideoMode(inWrap)  // in case this wrap was previously showing a still
   // Apply color to incoming wrap immediately — outWrap keeps its own filter throughout
   if (looping) {
     // Loop dissolve — always inherit whatever filter is currently on the active wrap,
@@ -137,6 +147,32 @@ function scheduleLoopDissolve(vid, src, dissolve) {
   vid.onended = () => doLoop(0.5)
 }
 
+// Crossfade to a still image — same opacity blend, but it HOLDS (no loop, no timer).
+function crossfadeToStill(src, dissolve, colorSettings) {
+  const { wrap: inWrap, img: inImg } = getInactive()
+  const { wrap: outWrap } = getActive()
+  inWrap.style.filter = colorSettings
+    ? makeFilter(colorSettings.brightness, colorSettings.contrast, colorSettings.hue, colorSettings.saturation)
+    : ''
+  setStillMode(inWrap)
+  inWrap.style.zIndex = '2'
+  outWrap.style.zIndex = '1'
+  const start = () => {
+    active = active === 'a' ? 'b' : 'a'
+    if (dissolve <= 0.1) { inWrap.style.opacity = '1'; outWrap.style.opacity = '0' }
+    else fadeWrap(inWrap, 1, dissolve)
+    setTimeout(() => {
+      outWrap.style.opacity = '0'
+      outWrap.style.zIndex = '1'
+      const ov = outWrap.querySelector('video')
+      if (ov) { ov.pause(); ov.srcObject = null; ov.removeAttribute('src') }
+    }, dissolve * 1000)
+  }
+  inImg.onload = start
+  inImg.onerror = start   // still reveal the wrap even if the image hiccups
+  inImg.src = src
+}
+
 // No external display notice
 window.showrunner.onNoExternalDisplay(() => {
   document.getElementById('no-display-notice').style.display = 'block'
@@ -157,6 +193,11 @@ window.showrunner.onLedCommand(({ type, src, dissolve, loop, brightness, contras
     const colorSettings = (brightness != null || contrast != null || hue != null || saturation != null)
       ? { brightness, contrast, hue, saturation } : null
     crossfadeTo(src, d, loop || false, colorSettings)
+  }
+  if (type === 'still') {
+    const colorSettings = (brightness != null || contrast != null || hue != null || saturation != null)
+      ? { brightness, contrast, hue, saturation } : null
+    crossfadeToStill(src, d, colorSettings)
   }
   if (type === 'black') {
     vidA.ontimeupdate = null

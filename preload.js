@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('showrunner', {
   getVideos:       ()            => ipcRenderer.invoke('get-videos'),
   loadShowFolder:  ()            => ipcRenderer.invoke('load-show-folder'),
   importVideo:     ()            => ipcRenderer.invoke('import-video'),
+  importStill:     ()            => ipcRenderer.invoke('import-still'),
   getVideoDataUrl: (path)        => ipcRenderer.invoke('get-video-data-url', path),
   sendToLed:       (data)        => ipcRenderer.invoke('send-to-led', data),
   saveLightingCue:      (opts)   => ipcRenderer.invoke('save-lighting-cue', opts),

@@ -52,6 +52,7 @@ const el = {
   btnResetShow: document.getElementById('btn-reset-show'),
   btnInsertBlackout: document.getElementById('btn-insert-blackout'),
   btnUploadScene: document.getElementById('btn-upload-scene'),
+  btnUploadStill: document.getElementById('btn-upload-still'),
   btnRestartRun: document.getElementById('btn-restart-run'),
   colorPanel: document.getElementById('color-panel'),
   ccBrightness: document.getElementById('cc-brightness'),
@@ -75,8 +76,28 @@ function updateDaysBadge(daysRemaining) {
 // ── Preview — mirrors LED window with same A/B crossfade engine ─────────────────
 const prevA = document.getElementById('preview-a')
 const prevB = document.getElementById('preview-b')
+const prevStill = document.getElementById('preview-still')
 let prevTop = prevA
 let prevBot = prevB
+
+// Preview still: fade the image in on top and fade the video layers out beneath it.
+function previewStill(src, dissolve, colorSettings) {
+  const d = dissolve <= 0.1 ? 0 : dissolve
+  prevA.ontimeupdate = null; prevB.ontimeupdate = null
+  prevStill.style.transition = `opacity ${d}s ease-in-out`
+  prevStill.style.filter = colorSettings ? makeColorFilter(colorSettings) : 'none'
+  prevStill.src = src
+  requestAnimationFrame(() => {
+    prevStill.style.opacity = '1'
+    prevA.style.transition = `opacity ${d}s ease-in-out`; prevA.style.opacity = '0'
+    prevB.style.transition = `opacity ${d}s ease-in-out`; prevB.style.opacity = '0'
+  })
+  document.getElementById('preview-container')?.classList.add('playing')
+}
+function previewHideStill(dissolve) {
+  prevStill.style.transition = `opacity ${dissolve <= 0.1 ? 0 : dissolve}s ease-in-out`
+  prevStill.style.opacity = '0'
+}
 
 function previewCrossfadeTo(src, dissolve, looping, colorSettings) {
   prevBot.ontimeupdate = null
@@ -138,8 +159,10 @@ function previewScheduleLoop(vid, src, dissolve) {
 
 function previewCommand({ type, src, dissolve, loop, colorSettings }) {
   const d = dissolve || 1
-  if (type === 'play') previewCrossfadeTo(src, d, loop || false, colorSettings)
+  if (type === 'play') { previewHideStill(d); previewCrossfadeTo(src, d, loop || false, colorSettings) }
+  if (type === 'still') previewStill(src, d, colorSettings)
   if (type === 'black') {
+    previewHideStill(d)
     prevA.ontimeupdate = null; prevB.ontimeupdate = null
     prevA.style.transition = `opacity ${d}s ease-in-out`
     prevB.style.transition = `opacity ${d}s ease-in-out`
@@ -382,6 +405,7 @@ function flattenCustomScene(cs, skip) {
     skip: !!skip,
     renamable: true,
     origin: cs.origin,
+    isStill: !!cs.still,
     name: cs.name || cs.backdrop?.label || 'Custom Scene',
     video_file: cs.backdrop?.file || null,
     backdrop_trigger: cs.backdrop?.trigger || '',
@@ -641,6 +665,33 @@ async function uploadScene() {
   renderSceneList(); updateCenterPanel(); updateNextPanel(); scrollSceneIntoView(at - 1)
 }
 
+// Upload the director's own still image(s) as new scenes. Stills always HOLD —
+// they display until the operator hits B — and never loop.
+async function uploadStill() {
+  if (isEditLocked() || !state.showId) return
+  const files = await window.showrunner.importStill()
+  if (!files || !files.length) return
+  await pushUndo()
+  const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
+  layout.customScenes = layout.customScenes || {}
+  let at = state.backdropIndex >= 0 ? state.backdropIndex + 1 : state.allScenes.length
+  for (const f of files) {
+    const id = 'cs-' + crypto.randomUUID()
+    const name = f.name || 'Still'
+    const cs = {
+      id, origin: 'upload', still: true, sourceSceneId: null, createdAt: new Date().toISOString(),
+      name, renamable: true,
+      backdrop: { file: f.filename, label: name, repeat: false, trigger: '' },
+      lighting: { cues: [] }, mti_pages: null, dissolveOverride: null,
+    }
+    layout.customScenes[id] = cs
+    state.allScenes.splice(at, 0, flattenCustomScene(cs)); at++
+  }
+  layout.order = orderFromScenes()
+  await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
+  renderSceneList(); updateCenterPanel(); updateNextPanel(); scrollSceneIntoView(at - 1)
+}
+
 // Rename an uploaded/duplicated scene (custom scenes only — our scene names are
 // read-only). Persists the new name to the overlay.
 async function renameScene(flatIndex) {
@@ -812,14 +863,19 @@ function playCurrentBackdrop() {
   }
   loadColorForScene(state.backdropIndex)
   if (!scene.video_file) return
-  const videoPath = `${state.folderPath}/${scene.video_file}`
-  const loop = true
+  const filePath = `${state.folderPath}/${scene.video_file}`
   const cc = getColorForScene(state.backdropIndex)
-  window.showrunner.sendToLed({ type: 'play', src: `file://${videoPath}`, dissolve: state.dissolveTime, loop, ...cc })
   const previewSrc = state.mediaPort
     ? `http://127.0.0.1:${state.mediaPort}/${encodeURIComponent(scene.video_file)}`
-    : `file://${videoPath}`
-  previewCommand({ type: 'play', src: previewSrc, dissolve: state.dissolveTime, loop, colorSettings: cc })
+    : `file://${filePath}`
+  if (scene.isStill) {
+    // Stills hold (no loop) and display in an image layer.
+    window.showrunner.sendToLed({ type: 'still', src: `file://${filePath}`, dissolve: state.dissolveTime, ...cc })
+    previewCommand({ type: 'still', src: previewSrc, dissolve: state.dissolveTime, colorSettings: cc })
+  } else {
+    window.showrunner.sendToLed({ type: 'play', src: `file://${filePath}`, dissolve: state.dissolveTime, loop: true, ...cc })
+    previewCommand({ type: 'play', src: previewSrc, dissolve: state.dissolveTime, loop: true, colorSettings: cc })
+  }
   // Update sliders to show new scene's color settings
   el.ccBrightness.value = cc.brightness
   el.ccContrast.value = cc.contrast
@@ -1310,7 +1366,7 @@ function updateEditModeLockBtn(locked) {
 // Enable/disable every structural (Custom-Mode) control based on the lock.
 function syncEditModeGates() {
   const locked = isEditLocked()
-  ;[el.btnResetShow, el.btnInsertBlackout, el.btnUploadScene].forEach(btn => {
+  ;[el.btnResetShow, el.btnInsertBlackout, el.btnUploadScene, el.btnUploadStill].forEach(btn => {
     if (!btn) return
     btn.disabled = locked
     btn.style.opacity = locked ? '0.4' : ''
@@ -1328,6 +1384,7 @@ el.btnEditModeLock.addEventListener('click', () => {
 
 el.btnInsertBlackout.addEventListener('click', insertBlackout)
 el.btnUploadScene.addEventListener('click', uploadScene)
+el.btnUploadStill.addEventListener('click', uploadStill)
 
 // Reset playback position only (NOT a customization change) — restart the run
 // from the top: clear played dimming, reset cue pointers, black the wall. Safe

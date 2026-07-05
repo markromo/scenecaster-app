@@ -38,7 +38,7 @@ function startMediaServer(folderPath) {
       if (!stat.isFile() || stat.size === 0) return fail(404)
 
       const ext = path.extname(filePath).slice(1).toLowerCase()
-      const mime = { mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska' }[ext] || 'video/mp4'
+      const mime = { mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' }[ext] || 'video/mp4'
       const range = req.headers.range
 
       let start = 0, end = stat.size - 1, status = 200
@@ -305,6 +305,19 @@ function registerIPC() {
   ipcMain.handle('import-video', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
       filters: [{ name: 'Video files', extensions: ['mp4', 'mov', 'webm', 'mkv'] }],
+      properties: ['openFile', 'multiSelections']
+    })
+    if (canceled) return []
+    return filePaths.map(p => {
+      const filename = path.basename(p)
+      const dest = path.join(VIDEOS_DIR, filename)
+      fs.copyFileSync(p, dest)
+      return { name: filename.replace(/\.[^.]+$/, ''), filename, path: dest }
+    })
+  })
+  ipcMain.handle('import-still', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'] }],
       properties: ['openFile', 'multiSelections']
     })
     if (canceled) return []
