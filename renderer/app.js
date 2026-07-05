@@ -54,6 +54,7 @@ const el = {
   btnUploadScene: document.getElementById('btn-upload-scene'),
   btnUploadStill: document.getElementById('btn-upload-still'),
   btnRestartRun: document.getElementById('btn-restart-run'),
+  btnCueSheet: document.getElementById('btn-cue-sheet'),
   colorPanel: document.getElementById('color-panel'),
   ccBrightness: document.getElementById('cc-brightness'),
   ccContrast: document.getElementById('cc-contrast'),
@@ -1443,6 +1444,71 @@ function resetPlaybackPosition() {
   renderSceneList(); updateCenterPanel(); updateNextPanel()
 }
 el.btnRestartRun.addEventListener('click', resetPlaybackPosition)
+
+// ── Printable PDF cue sheet ──────────────────────────────────────────────────
+// Reflects the CUSTOMIZED running order: sequential numbers (skipped rows struck
+// through and marked), blackouts, renamed/added scenes flagged, per-scene
+// transition length, MTI pages, trigger/notes, and lighting cues.
+function buildCueSheetHtml() {
+  const showTitle = state.show?.show?.title || 'SceneCaster Show'
+  const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+  let seq = 0
+  const rows = state.allScenes.map(s => {
+    const isBlackout = s.sceneRef.kind === 'blackout'
+    const isCustom = s.sceneRef.kind === 'custom'
+    const skipped = !!s.skip
+    if (!skipped) seq++
+    const numCell = skipped ? '<span class="skip">SKIP</span>' : String(seq)
+    const dissolve = s.dissolveOverride != null ? s.dissolveOverride : state.dissolveTime
+    const transition = isBlackout ? `${dissolve}s → black` : `${dissolve}s`
+    let nameCell
+    if (isBlackout) nameCell = '<em>Blackout</em>'
+    else if (isCustom) nameCell = `${escHtml(s.name)} <span class="tag">${s.isStill ? 'still' : 'added'}</span>`
+    else nameCell = escHtml(s.name)
+    const trigger = (s.backdrop_trigger || '').replace(/<br>/g, ' ')  // already sanitized to strong/em/br
+    const lighting = (s.lighting_cues || []).map(c => escHtml(c.cue_code || '')).filter(Boolean).join(', ')
+    return `<tr class="${skipped ? 'row-skip' : ''}">
+      <td class="num">${numCell}</td>
+      <td>${nameCell}</td>
+      <td class="trig">${trigger}</td>
+      <td class="pg">${s.mti_page ? escHtml(String(s.mti_page)) : ''}</td>
+      <td class="pg">${transition}</td>
+      <td class="lt">${lighting}</td>
+    </tr>`
+  }).join('')
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    body{font-family:-apple-system,Arial,sans-serif;color:#111;margin:32px}
+    h1{font-size:20px;margin:0 0 2px}
+    .sub{color:#666;font-size:12px;margin:0 0 18px}
+    table{width:100%;border-collapse:collapse;font-size:12px}
+    th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #ddd;vertical-align:top}
+    th{background:#f5f5f5;font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#666}
+    td.num{width:34px;color:#888;font-variant-numeric:tabular-nums}
+    td.pg{width:78px;white-space:nowrap}
+    td.trig{font-style:italic;color:#333}
+    .row-skip td{color:#bbb;text-decoration:line-through}
+    .row-skip .skip{text-decoration:none;font-style:normal;color:#c0392b;font-weight:700;font-size:10px}
+    .tag{display:inline-block;font-size:9px;background:#FF5A0D;color:#fff;border-radius:3px;padding:1px 5px;vertical-align:middle;text-decoration:none;font-style:normal}
+    .foot{margin-top:20px;color:#999;font-size:10px;text-align:center}
+    tr{page-break-inside:avoid}
+  </style></head><body>
+    <h1>${escHtml(showTitle)} — Cue Sheet</h1>
+    <p class="sub">Generated ${dateStr} · e-llusion media SceneCaster</p>
+    <table><thead><tr><th>#</th><th>Scene</th><th>Trigger / Notes</th><th>MTI Pg</th><th>Transition</th><th>Lighting</th></tr></thead>
+    <tbody>${rows}</tbody></table>
+    <p class="foot">Reflects your customized running order.</p>
+  </body></html>`
+}
+
+el.btnCueSheet.addEventListener('click', async () => {
+  if (!state.allScenes.length) return
+  el.btnCueSheet.disabled = true
+  const prev = el.btnCueSheet.textContent
+  el.btnCueSheet.textContent = 'Saving…'
+  const res = await window.showrunner.exportCueSheet(buildCueSheetHtml())
+  el.btnCueSheet.textContent = res && res.success ? '✓ Saved' : prev
+  setTimeout(() => { el.btnCueSheet.textContent = prev; el.btnCueSheet.disabled = false }, 1500)
+})
 
 // ── Reset to Original (full reset — the safety net) ──────────────────────────
 el.btnResetShow.addEventListener('click', async () => {

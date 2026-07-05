@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('showrunner', {
   saveBackdropTrigger:  (opts)   => ipcRenderer.invoke('save-backdrop-trigger', opts),
   startMediaServer:   (folderPath) => ipcRenderer.invoke('start-media-server', folderPath),
   openUrl:            (url)        => ipcRenderer.invoke('open-url', url),
+  exportCueSheet:     (html)       => ipcRenderer.invoke('export-cue-sheet', html),
   fetchManifest:      ()           => ipcRenderer.invoke('fetch-manifest'),
   getDownloadStatus:  ()           => ipcRenderer.invoke('get-download-status'),
   downloadFile:       (opts)       => ipcRenderer.invoke('download-file', opts),

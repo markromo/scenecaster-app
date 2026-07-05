@@ -329,6 +329,23 @@ function registerIPC() {
     })
   })
   ipcMain.handle('open-url', (_, url) => shell.openExternal(url))
+  ipcMain.handle('export-cue-sheet', async (_, html) => {
+    try {
+      const { canceled, filePath } = await dialog.showSaveDialog({
+        defaultPath: 'SceneCaster-Cue-Sheet.pdf',
+        filters: [{ name: 'PDF', extensions: ['pdf'] }]
+      })
+      if (canceled || !filePath) return { success: false, canceled: true }
+      const win = new BrowserWindow({ show: false, webPreferences: { offscreen: false } })
+      await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+      const pdf = await win.webContents.printToPDF({ printBackground: true, pageSize: 'Letter' })
+      fs.writeFileSync(filePath, pdf)
+      win.destroy()
+      return { success: true, filePath }
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
   ipcMain.handle('get-video-data-url', (_, videoPath) => {
     const ext = path.extname(videoPath).slice(1).toLowerCase()
     const mimeMap = { mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska' }
