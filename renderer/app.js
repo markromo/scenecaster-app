@@ -734,7 +734,7 @@ async function renameScene(flatIndex) {
   if (isEditLocked() || !state.showId) return
   const s = state.allScenes[flatIndex]
   if (!s || s.sceneRef.kind !== 'custom') return
-  const next = window.prompt('Rename this scene:', s.name || '')
+  const next = await showInputModal('Rename this scene', s.name || '')
   if (next == null) return
   await pushUndo()
   const name = next.trim() || s.name
@@ -754,14 +754,13 @@ async function setSceneDissolve(flatIndex) {
   const scene = state.allScenes[flatIndex]
   if (!scene) return
   const cur = scene.dissolveOverride != null ? scene.dissolveOverride : state.dissolveTime
-  const input = window.prompt('Dissolve length for this scene, in seconds (0–3):', String(cur))
+  const input = await showInputModal('Dissolve length for this scene, in seconds (0–3)', cur, { type: 'number', min: 0, max: 3, step: 0.1 })
   if (input == null) return
   let v = parseFloat(input)
   if (Number.isNaN(v)) return
   v = Math.max(0, Math.min(3, Math.round(v * 10) / 10))
   await pushUndo()
   scene.dissolveOverride = v
-  console.log('[dissolve debug] SET', { scene: scene.name, kind: scene.sceneRef.kind, id: scene.sceneRef.sceneId || scene.sceneRef.id, value: v })
   const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
   if (scene.sceneRef.kind === 'master') {
     layout.overrides[scene.sceneRef.sceneId] = layout.overrides[scene.sceneRef.sceneId] || {}
@@ -953,7 +952,6 @@ function playCurrentBackdrop() {
   // Per-scene dissolve length overrides the global default for the transition
   // INTO this scene; falls back to the global slider when not set.
   const dissolve = scene.dissolveOverride != null ? scene.dissolveOverride : state.dissolveTime
-  console.log('[dissolve debug]', { scene: scene.name, dissolveOverride: scene.dissolveOverride, globalSlider: state.dissolveTime, using: dissolve })
   // Blackout entries have no video — advancing onto one goes to black.
   if (scene.kind === 'blackout') {
     const cmd = { type: 'black', dissolve }
@@ -1378,6 +1376,43 @@ document.getElementById('cc-reset').addEventListener('click', () => {
 })
 
 // ── Keyboard shortcuts + help overlay ───────────────────────────────────────────
+// ── Generic input modal (replaces window.prompt, which Electron's Chromium
+// build throws on: "prompt() is and will not be supported") ─────────────────
+const inputModal = document.getElementById('input-modal')
+const inputModalTitle = document.getElementById('input-modal-title')
+const inputModalField = document.getElementById('input-modal-field')
+const inputModalCancel = document.getElementById('input-modal-cancel')
+const inputModalSave = document.getElementById('input-modal-save')
+let _inputModalResolve = null
+
+function showInputModal(title, initialValue, opts = {}) {
+  return new Promise(resolve => {
+    _inputModalResolve = resolve
+    inputModalTitle.textContent = title
+    inputModalField.type = opts.type || 'text'
+    if (opts.min != null) inputModalField.min = opts.min
+    if (opts.max != null) inputModalField.max = opts.max
+    if (opts.step != null) inputModalField.step = opts.step
+    inputModalField.value = initialValue != null ? initialValue : ''
+    inputModal.classList.remove('hidden')
+    inputModalField.focus()
+    inputModalField.select()
+  })
+}
+function closeInputModal(result) {
+  inputModal.classList.add('hidden')
+  const resolve = _inputModalResolve
+  _inputModalResolve = null
+  if (resolve) resolve(result)
+}
+inputModalSave.addEventListener('click', () => closeInputModal(inputModalField.value))
+inputModalCancel.addEventListener('click', () => closeInputModal(null))
+inputModal.addEventListener('click', e => { if (e.target === inputModal) closeInputModal(null) })
+inputModalField.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); closeInputModal(inputModalField.value) }
+  if (e.key === 'Escape') { e.preventDefault(); closeInputModal(null) }
+})
+
 const helpOverlay = document.getElementById('help-overlay')
 function toggleHelp() { helpOverlay.classList.toggle('hidden') }
 function closeHelp() { helpOverlay.classList.add('hidden') }
