@@ -473,6 +473,37 @@ async function mountShow(cues, folderPath, payload, daysRemaining, showId) {
 }
 
 
+// ── Custom arrangement persistence (shared by skip / reorder / blackout / delete) ──
+function emptyLayoutClient() {
+  return { version: 1, showId: state.showId, order: [], overrides: {}, customScenes: {}, blackouts: {} }
+}
+
+// Write the CURRENT on-screen arrangement (order + skip flags) into the overlay,
+// preserving overrides/customScenes/blackouts. Single primitive every structural
+// edit calls after mutating state.allScenes.
+async function persistArrangement() {
+  if (!state.showId) return
+  const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
+  layout.order = state.allScenes.map(s => {
+    if (s.sceneRef.kind === 'master') {
+      return s.skip ? { kind: 'master', sceneId: s.sceneRef.sceneId, skip: true }
+                    : { kind: 'master', sceneId: s.sceneRef.sceneId }
+    }
+    if (s.sceneRef.kind === 'custom') return { kind: 'custom', id: s.sceneRef.id }
+    return { kind: 'blackout', id: s.sceneRef.id }
+  })
+  await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
+}
+
+async function toggleSkip(flatIndex) {
+  if (isEditLocked()) return
+  const scene = state.allScenes[flatIndex]
+  if (!scene || scene.sceneRef.kind !== 'master') return
+  scene.skip = !scene.skip
+  await persistArrangement()
+  renderSceneList(); updateNextPanel()
+}
+
 // ── Scene list ──────────────────────────────────────────────────────────────────
 function renderSceneList() {
   if (!state.show) return
@@ -495,6 +526,15 @@ function renderSceneList() {
     const pageSnippet = scene.mti_page ? `<div class="scene-page">p.${scene.mti_page}</div>` : ''
     item.innerHTML = `<div class="scene-name">${escHtml(scene.name)}</div>${triggerSnippet}${pageSnippet}`
     item.addEventListener('click', () => jumpToScene(flatIndex))
+    // In Edit Mode, master scenes get a Skip/Unskip toggle (stays in list, won't play).
+    if (!isEditLocked() && scene.sceneRef.kind === 'master') {
+      const skipBtn = document.createElement('button')
+      skipBtn.className = 'scene-skip-btn'
+      skipBtn.textContent = scene.skip ? 'Unskip' : 'Skip'
+      skipBtn.title = scene.skip ? 'Include this scene again' : "Skip this scene — stays in the list but won't play"
+      skipBtn.addEventListener('click', e => { e.stopPropagation(); toggleSkip(flatIndex) })
+      item.appendChild(skipBtn)
+    }
     el.sceneList.appendChild(item)
   })
 }
@@ -1040,6 +1080,8 @@ function syncEditModeGates() {
     btn.style.opacity = locked ? '0.4' : ''
     btn.style.pointerEvents = locked ? 'none' : ''
   })
+  // Re-render the scene list so per-row edit controls (Skip, etc.) appear/hide.
+  if (state.show) renderSceneList()
 }
 
 el.btnEditModeLock.addEventListener('click', () => {
