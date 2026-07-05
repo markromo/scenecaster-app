@@ -652,7 +652,7 @@ function openSceneMenu(flatIndex, anchor) {
   if (kind === 'master' || kind === 'custom') items.push([scene.skip ? 'Unskip' : 'Skip', () => toggleSkip(flatIndex)])
   if (kind === 'custom') items.push(['Rename', () => renameScene(flatIndex)])
   items.push(['Duplicate', () => duplicateScene(flatIndex)])
-  items.push([scene.dissolveOverride != null ? `Set Dissolve (${scene.dissolveOverride}s)…` : 'Set Dissolve…', () => setSceneDissolve(flatIndex)])
+  items.push([scene.dissolveOverride != null ? `Set Dissolve In (${scene.dissolveOverride}s)…` : 'Set Dissolve In…', () => setSceneDissolve(flatIndex)])
   if (scene.dissolveOverride != null) items.push(['Use default dissolve', () => clearSceneDissolve(flatIndex)])
   items.push(['Delete', () => deleteScene(flatIndex)])
 
@@ -761,6 +761,7 @@ async function setSceneDissolve(flatIndex) {
   v = Math.max(0, Math.min(3, Math.round(v * 10) / 10))
   await pushUndo()
   scene.dissolveOverride = v
+  console.log('[dissolve debug] SET', { scene: scene.name, kind: scene.sceneRef.kind, id: scene.sceneRef.sceneId || scene.sceneRef.id, value: v })
   const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
   if (scene.sceneRef.kind === 'master') {
     layout.overrides[scene.sceneRef.sceneId] = layout.overrides[scene.sceneRef.sceneId] || {}
@@ -952,6 +953,7 @@ function playCurrentBackdrop() {
   // Per-scene dissolve length overrides the global default for the transition
   // INTO this scene; falls back to the global slider when not set.
   const dissolve = scene.dissolveOverride != null ? scene.dissolveOverride : state.dissolveTime
+  console.log('[dissolve debug]', { scene: scene.name, dissolveOverride: scene.dissolveOverride, globalSlider: state.dissolveTime, using: dissolve })
   // Blackout entries have no video — advancing onto one goes to black.
   if (scene.kind === 'blackout') {
     const cmd = { type: 'black', dissolve }

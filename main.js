@@ -565,6 +565,10 @@ function buildMenu() {
       ]
     },
     {
+      label: 'View',
+      submenu: [{ role: 'toggleDevTools' }, { role: 'reload' }]
+    },
+    {
       label: 'Window',
       submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'close' }]
     }
