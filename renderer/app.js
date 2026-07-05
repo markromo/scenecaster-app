@@ -532,19 +532,59 @@ async function toggleSkip(flatIndex) {
   renderSceneList(); updateNextPanel()
 }
 
-// Move a scene up/down (cross-act allowed). Keeps the current/lighting pointers
-// following their scenes across the swap.
-async function moveScene(flatIndex, dir) {
+// Move a scene from one slot to another (drag-and-drop, cross-act allowed).
+// Pointers follow their scenes by instanceId across the move.
+async function moveSceneTo(from, to) {
   if (isEditLocked()) return
-  const j = flatIndex + dir
-  if (j < 0 || j >= state.allScenes.length) return
   const arr = state.allScenes
-  ;[arr[flatIndex], arr[j]] = [arr[j], arr[flatIndex]]
-  const fix = i => i === flatIndex ? j : (i === j ? flatIndex : i)
-  state.backdropIndex = fix(state.backdropIndex)
-  state.lightingIndex = fix(state.lightingIndex)
+  if (from < 0 || from >= arr.length || from === to) return
+  const curId = state.backdropIndex >= 0 ? arr[state.backdropIndex]?.instanceId : null
+  const ligId = state.lightingIndex >= 0 ? arr[state.lightingIndex]?.instanceId : null
+  const [item] = arr.splice(from, 1)
+  let dest = to > from ? to - 1 : to
+  dest = Math.max(0, Math.min(dest, arr.length))
+  arr.splice(dest, 0, item)
+  state.backdropIndex = curId ? arr.findIndex(s => s.instanceId === curId) : -1
+  state.lightingIndex = ligId ? arr.findIndex(s => s.instanceId === ligId) : state.backdropIndex
   await persistArrangement()
-  renderSceneList(); updateCenterPanel(); updateNextPanel(); scrollSceneIntoView(j)
+  renderSceneList(); updateCenterPanel(); updateNextPanel()
+}
+
+// ── Scene row drag + ⋯ options menu ──────────────────────────────────────────
+let _dragFrom = null
+function setDragOver(item) { clearDragOver(); item.classList.add('drag-over') }
+function clearDragOver() { el.sceneList.querySelectorAll('.scene-item.drag-over').forEach(n => n.classList.remove('drag-over')) }
+
+let _sceneMenuEl = null
+function closeSceneMenu() {
+  if (_sceneMenuEl) { _sceneMenuEl.remove(); _sceneMenuEl = null; document.removeEventListener('click', closeSceneMenu) }
+}
+function openSceneMenu(flatIndex, anchor) {
+  closeSceneMenu()
+  const scene = state.allScenes[flatIndex]
+  if (!scene) return
+  const kind = scene.sceneRef.kind
+  const items = []
+  if (kind === 'master') items.push([scene.skip ? 'Unskip' : 'Skip', () => toggleSkip(flatIndex)])
+  if (kind === 'custom') items.push(['Rename', () => renameScene(flatIndex)])
+  if (kind === 'master' || kind === 'custom') items.push(['Copy', () => duplicateScene(flatIndex)])
+  items.push(['Delete', () => deleteScene(flatIndex)])
+
+  const menu = document.createElement('div')
+  menu.className = 'scene-menu'
+  items.forEach(([label, fn]) => {
+    const b = document.createElement('button')
+    b.className = 'scene-menu-item' + (label === 'Delete' ? ' danger' : '')
+    b.textContent = label
+    b.addEventListener('click', e => { e.stopPropagation(); closeSceneMenu(); fn() })
+    menu.appendChild(b)
+  })
+  document.body.appendChild(menu)
+  const r = anchor.getBoundingClientRect()
+  menu.style.top = `${Math.round(r.bottom + 4)}px`
+  menu.style.left = `${Math.round(Math.min(r.left, window.innerWidth - 160))}px`
+  _sceneMenuEl = menu
+  setTimeout(() => document.addEventListener('click', closeSceneMenu), 0)
 }
 
 // Upload the director's own video(s) as new independent scenes. Reuses the
@@ -595,12 +635,23 @@ async function renameScene(flatIndex) {
 // Duplicate a scene as a fully independent copy (own id → own color/cues/trigger/
 // position). Deep-copies presentation at creation; editing the original later
 // never affects the copy and vice-versa.
+// Build the next "<base> (Copy N)" name — base strips any existing "(Copy N)"
+// suffix so copies-of-copies keep numbering off the original, and N is one past
+// the highest existing copy of that base currently in the list.
+function nextCopyName(sourceName) {
+  const base = String(sourceName || 'Scene').replace(/\s*\(Copy(?:\s+\d+)?\)\s*$/i, '').trim() || 'Scene'
+  const re = new RegExp('^' + base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\(Copy\\s+(\\d+)\\)$', 'i')
+  let max = 0
+  state.allScenes.forEach(s => { const m = (s.name || '').match(re); if (m) max = Math.max(max, parseInt(m[1], 10)) })
+  return `${base} (Copy ${max + 1})`
+}
+
 async function duplicateScene(flatIndex) {
   if (isEditLocked() || !state.showId) return
   const src = state.allScenes[flatIndex]
   if (!src || src.sceneRef.kind === 'blackout') return  // blackouts aren't duplicable
   const id = 'cs-' + crypto.randomUUID()
-  const copyName = `${src.name || 'Scene'} (Copy)`
+  const copyName = nextCopyName(src.name)
   const cs = {
     id,
     origin: 'duplicate',
@@ -649,6 +700,7 @@ async function deleteScene(flatIndex) {
 // ── Scene list ──────────────────────────────────────────────────────────────────
 function renderSceneList() {
   if (!state.show) return
+  closeSceneMenu()
   el.sceneList.innerHTML = ''
   let lastAct = null
   // Act dividers only make sense while the list is in its original order. Once the
@@ -673,30 +725,21 @@ function renderSceneList() {
     const pageSnippet = scene.mti_page ? `<div class="scene-page">p.${scene.mti_page}</div>` : ''
     item.innerHTML = `<div class="scene-name">${escHtml(scene.name)}</div>${triggerSnippet}${pageSnippet}`
     item.addEventListener('click', () => jumpToScene(flatIndex))
-    // In Edit Mode, rows get inline edit controls (shown on hover).
+    // In Edit Mode: rows are draggable to reorder, and expose a single ⋯ menu.
     if (!isEditLocked()) {
-      const kind = scene.sceneRef.kind
-      const actions = document.createElement('div')
-      actions.className = 'scene-row-actions'
-      const addBtn = (label, title, fn) => {
-        const b = document.createElement('button')
-        b.className = 'scene-row-btn'; b.textContent = label; b.title = title
-        b.addEventListener('click', e => { e.stopPropagation(); fn() })
-        actions.appendChild(b)
-      }
-      if (flatIndex > 0) addBtn('↑', 'Move up', () => moveScene(flatIndex, -1))
-      if (flatIndex < state.allScenes.length - 1) addBtn('↓', 'Move down', () => moveScene(flatIndex, 1))
-      if (kind === 'master') {
-        addBtn(scene.skip ? 'Unskip' : 'Skip', scene.skip ? 'Include this scene again' : "Skip — stays in the list but won't play", () => toggleSkip(flatIndex))
-      }
-      if (kind === 'custom') {
-        addBtn('Rename', 'Rename this scene', () => renameScene(flatIndex))
-      }
-      if (kind === 'master' || kind === 'custom') {
-        addBtn('Copy', 'Duplicate this scene as an independent copy', () => duplicateScene(flatIndex))
-      }
-      addBtn('Delete', kind === 'master' ? 'Remove from the running order (restore with Reset)' : 'Remove this item', () => deleteScene(flatIndex))
-      item.appendChild(actions)
+      item.draggable = true
+      item.addEventListener('dragstart', e => { _dragFrom = flatIndex; item.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move' })
+      item.addEventListener('dragend', () => { item.classList.remove('dragging'); clearDragOver() })
+      item.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOver(item) })
+      item.addEventListener('drop', e => { e.preventDefault(); const from = _dragFrom; _dragFrom = null; clearDragOver(); if (from != null) moveSceneTo(from, flatIndex) })
+
+      const menuBtn = document.createElement('button')
+      menuBtn.className = 'scene-menu-btn'
+      menuBtn.textContent = '⋯'
+      menuBtn.title = 'Scene options'
+      menuBtn.draggable = false
+      menuBtn.addEventListener('click', e => { e.stopPropagation(); openSceneMenu(flatIndex, menuBtn) })
+      item.appendChild(menuBtn)
     }
     el.sceneList.appendChild(item)
   })
