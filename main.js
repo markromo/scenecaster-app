@@ -559,7 +559,7 @@ function buildMenu() {
       label: 'Edit',
       submenu: [
         { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('menu-undo') } },
-        { role: 'redo' },
+        { label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z', click: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('menu-redo') } },
         { type: 'separator' },
         { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }
       ]

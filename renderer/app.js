@@ -538,24 +538,39 @@ async function persistArrangement() {
   await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
 }
 
-// ── Undo (Cmd/Ctrl+Z) ────────────────────────────────────────────────────────
-// Snapshot the whole overlay before each structural edit; undo restores it.
+// ── Undo / Redo (Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z) ──────────────────────────────
+// Snapshot the whole overlay before each structural edit; undo restores it and
+// pushes the state you left onto the redo stack. Any new edit clears redo —
+// standard undo/redo semantics.
 const _undoStack = []
+const _redoStack = []
+async function currentLayoutSnapshot() {
+  const cur = await window.showrunner.getCustomLayout({ showId: state.showId })
+  return cur ? JSON.stringify(cur) : null   // null = "no overlay yet"
+}
 async function pushUndo() {
   if (!state.showId) return
-  const cur = await window.showrunner.getCustomLayout({ showId: state.showId })
-  _undoStack.push(cur ? JSON.stringify(cur) : null)   // null = "no overlay yet"
+  _undoStack.push(await currentLayoutSnapshot())
   if (_undoStack.length > 50) _undoStack.shift()
+  _redoStack.length = 0   // a fresh edit invalidates redo history
+}
+async function restoreSnapshot(snap) {
+  if (snap === null) {
+    await window.showrunner.resetCustomLayout({ showId: state.showId, mode: 'full' })
+  } else {
+    await window.showrunner.saveCustomLayout({ showId: state.showId, layout: JSON.parse(snap) })
+  }
+  await mountShow(state.show, state.folderPath, state.payload, state.daysRemaining, state.showId)
 }
 async function sceneUndo() {
   if (isEditLocked() || !state.showId || !_undoStack.length) return
-  const prev = _undoStack.pop()
-  if (prev === null) {
-    await window.showrunner.resetCustomLayout({ showId: state.showId, mode: 'full' })
-  } else {
-    await window.showrunner.saveCustomLayout({ showId: state.showId, layout: JSON.parse(prev) })
-  }
-  await mountShow(state.show, state.folderPath, state.payload, state.daysRemaining, state.showId)
+  _redoStack.push(await currentLayoutSnapshot())
+  await restoreSnapshot(_undoStack.pop())
+}
+async function sceneRedo() {
+  if (isEditLocked() || !state.showId || !_redoStack.length) return
+  _undoStack.push(await currentLayoutSnapshot())
+  await restoreSnapshot(_redoStack.pop())
 }
 
 // Insert a blackout cue right after the current scene (or at the end).
@@ -621,7 +636,7 @@ function openSceneMenu(flatIndex, anchor) {
   const items = []
   if (kind === 'master' || kind === 'custom') items.push([scene.skip ? 'Unskip' : 'Skip', () => toggleSkip(flatIndex)])
   if (kind === 'custom') items.push(['Rename', () => renameScene(flatIndex)])
-  items.push(['Copy', () => duplicateScene(flatIndex)])
+  items.push(['Duplicate', () => duplicateScene(flatIndex)])
   items.push([scene.dissolveOverride != null ? `Set Dissolve (${scene.dissolveOverride}s)…` : 'Set Dissolve…', () => setSceneDissolve(flatIndex)])
   if (scene.dissolveOverride != null) items.push(['Use default dissolve', () => clearSceneDissolve(flatIndex)])
   items.push(['Delete', () => deleteScene(flatIndex)])
@@ -1552,6 +1567,15 @@ window.showrunner.onMenuUndo(() => {
     document.execCommand('undo')
   } else {
     sceneUndo()
+  }
+})
+// Cmd/Ctrl+Shift+Z routed from the app menu: native text redo in a field, else scene redo.
+window.showrunner.onMenuRedo(() => {
+  const a = document.activeElement
+  if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable)) {
+    document.execCommand('redo')
+  } else {
+    sceneRedo()
   }
 })
 

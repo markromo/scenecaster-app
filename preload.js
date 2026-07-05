@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('showrunner', {
   ledVideoReady:      ()           => ipcRenderer.send('led-video-ready'),
   onShowActivate:     (cb)         => ipcRenderer.on('show-activate', () => cb()),
   onMenuUndo:         (cb)         => ipcRenderer.on('menu-undo', () => cb()),
+  onMenuRedo:         (cb)         => ipcRenderer.on('menu-redo', () => cb()),
   openLedWindow:      ()           => ipcRenderer.invoke('open-led-window'),
   onNoExternalDisplay:(cb)         => ipcRenderer.on('no-external-display', () => cb()),
   onLedWindowReady:   (cb)         => ipcRenderer.on('led-window-ready', () => cb()),
