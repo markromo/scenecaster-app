@@ -943,10 +943,19 @@ document.getElementById('cc-reset').addEventListener('click', () => {
   saveColorSettingsToDisk()
 })
 
-// ── Keyboard shortcuts ──────────────────────────────────────────────────────────
+// ── Keyboard shortcuts + help overlay ───────────────────────────────────────────
+const helpOverlay = document.getElementById('help-overlay')
+function toggleHelp() { helpOverlay.classList.toggle('hidden') }
+function closeHelp() { helpOverlay.classList.add('hidden') }
+document.getElementById('help-close').addEventListener('click', closeHelp)
+helpOverlay.addEventListener('click', e => { if (e.target === helpOverlay) closeHelp() })
+
 document.addEventListener('keydown', e => {
   if (screens.player.classList.contains('hidden')) return
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.contentEditable === 'true') return
+  if (e.key === '?' || e.code === 'KeyH') { e.preventDefault(); toggleHelp(); return }
+  if (e.code === 'Escape') { if (!helpOverlay.classList.contains('hidden')) { e.preventDefault(); closeHelp() } return }
+  if (!helpOverlay.classList.contains('hidden')) return  // don't drive the show while help is open
   switch (e.code) {
     case 'KeyB': e.preventDefault(); advanceBackdrop(); break
     case 'KeyL': e.preventDefault(); advanceLighting(); break
