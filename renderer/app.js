@@ -49,6 +49,7 @@ const el = {
   btnColorToggle: document.getElementById('btn-color-toggle'),
   btnRearProjection: document.getElementById('btn-rear-projection'),
   btnEditModeLock: document.getElementById('btn-edit-mode-lock'),
+  btnResetShow: document.getElementById('btn-reset-show'),
   colorPanel: document.getElementById('color-panel'),
   ccBrightness: document.getElementById('cc-brightness'),
   ccContrast: document.getElementById('cc-contrast'),
@@ -408,6 +409,8 @@ async function mountShow(cues, folderPath, payload, daysRemaining, showId) {
   state.show = cues
   state.folderPath = folderPath
   state.showId = showId || null
+  state.payload = payload            // kept so the show can be re-mounted (e.g. after Reset)
+  state.daysRemaining = daysRemaining
   state.mediaPort = await window.showrunner.startMediaServer(folderPath)
   state.backdropIndex = -1; state.lightingIndex = -1; state.lightingSubIndex = 0
   state.playedScenes = new Set(); state.allScenes = []
@@ -1024,12 +1027,38 @@ function updateEditModeLockBtn(locked) {
     el.btnEditModeLock.style.color = ''
     el.btnEditModeLock.style.borderColor = ''
   }
+  // Structural actions are only available in Edit Mode (unlocked).
+  syncEditModeGates()
+}
+
+// Enable/disable every structural (Custom-Mode) control based on the lock.
+function syncEditModeGates() {
+  const locked = isEditLocked()
+  ;[el.btnResetShow].forEach(btn => {
+    if (!btn) return
+    btn.disabled = locked
+    btn.style.opacity = locked ? '0.4' : ''
+    btn.style.pointerEvents = locked ? 'none' : ''
+  })
 }
 
 el.btnEditModeLock.addEventListener('click', () => {
   appSettings.editModeLocked = !appSettings.editModeLocked
   updateEditModeLockBtn(appSettings.editModeLocked)
   window.showrunner.saveAppSettings(appSettings)
+})
+
+// ── Reset to Original (full reset — the safety net) ──────────────────────────
+el.btnResetShow.addEventListener('click', async () => {
+  if (isEditLocked()) return
+  if (!state.showId) return
+  const ok = window.confirm(
+    'Reset to Original?\n\nThis discards ALL customizations for this show — reordering, skipped scenes, blackouts, added or duplicated scenes, and edited triggers — and restores the original show exactly as e-llusion media provided it.\n\nThis cannot be undone.'
+  )
+  if (!ok) return
+  await window.showrunner.resetCustomLayout({ showId: state.showId, mode: 'full' })
+  // Re-mount from the (now empty) overlay → back to natural master order.
+  await mountShow(state.show, state.folderPath, state.payload, state.daysRemaining, state.showId)
 })
 
 // When LED window (re)opens, re-apply state so operator never has to click twice
