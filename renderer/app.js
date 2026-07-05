@@ -438,6 +438,11 @@ async function mountShow(cues, folderPath, payload, daysRemaining, showId) {
     })
   })
 
+  // The natural owned order (master scenes only) — used to tell whether the list
+  // is still in default order (show Act dividers) or has been customized (flat list).
+  state.naturalOrderIds = []
+  cues.acts.forEach(act => act.scenes.forEach(scene => { if (isOwned(scene)) state.naturalOrderIds.push(scene.id) }))
+
   // Custom overlay (null when the operator hasn't customized this show yet).
   const layout = state.showId ? await window.showrunner.getCustomLayout({ showId: state.showId }) : null
 
@@ -525,6 +530,21 @@ async function toggleSkip(flatIndex) {
   renderSceneList(); updateNextPanel()
 }
 
+// Move a scene up/down (cross-act allowed). Keeps the current/lighting pointers
+// following their scenes across the swap.
+async function moveScene(flatIndex, dir) {
+  if (isEditLocked()) return
+  const j = flatIndex + dir
+  if (j < 0 || j >= state.allScenes.length) return
+  const arr = state.allScenes
+  ;[arr[flatIndex], arr[j]] = [arr[j], arr[flatIndex]]
+  const fix = i => i === flatIndex ? j : (i === j ? flatIndex : i)
+  state.backdropIndex = fix(state.backdropIndex)
+  state.lightingIndex = fix(state.lightingIndex)
+  await persistArrangement()
+  renderSceneList(); updateCenterPanel(); updateNextPanel(); scrollSceneIntoView(j)
+}
+
 // Duplicate a scene as a fully independent copy (own id → own color/cues/trigger/
 // position). Deep-copies presentation at creation; editing the original later
 // never affects the copy and vice-versa.
@@ -584,10 +604,15 @@ function renderSceneList() {
   if (!state.show) return
   el.sceneList.innerHTML = ''
   let lastAct = null
+  // Act dividers only make sense while the list is in its original order. Once the
+  // director reorders / inserts / removes, we switch to a flat customized list.
+  const nat = state.naturalOrderIds || []
+  const isNatural = state.allScenes.length === nat.length &&
+    state.allScenes.every((s, i) => s.sceneRef.kind === 'master' && s.instanceId === nat[i])
   state.allScenes.forEach((scene, flatIndex) => {
     // Only master scenes carry an act number; custom/blackout entries slot in
     // under the current act without spawning a spurious divider.
-    if (scene.actNum != null && scene.actNum !== lastAct) {
+    if (isNatural && scene.actNum != null && scene.actNum !== lastAct) {
       const div = document.createElement('div')
       div.className = 'act-divider'
       div.textContent = `Act ${scene.actNum}`
@@ -612,6 +637,8 @@ function renderSceneList() {
         b.addEventListener('click', e => { e.stopPropagation(); fn() })
         actions.appendChild(b)
       }
+      if (flatIndex > 0) addBtn('↑', 'Move up', () => moveScene(flatIndex, -1))
+      if (flatIndex < state.allScenes.length - 1) addBtn('↓', 'Move down', () => moveScene(flatIndex, 1))
       if (kind === 'master') {
         addBtn(scene.skip ? 'Unskip' : 'Skip', scene.skip ? 'Include this scene again' : "Skip — stays in the list but won't play", () => toggleSkip(flatIndex))
       }
