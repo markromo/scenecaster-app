@@ -50,6 +50,7 @@ const el = {
   btnRearProjection: document.getElementById('btn-rear-projection'),
   btnEditModeLock: document.getElementById('btn-edit-mode-lock'),
   btnResetShow: document.getElementById('btn-reset-show'),
+  btnInsertBlackout: document.getElementById('btn-insert-blackout'),
   colorPanel: document.getElementById('color-panel'),
   ccBrightness: document.getElementById('cc-brightness'),
   ccContrast: document.getElementById('cc-contrast'),
@@ -481,10 +482,8 @@ function emptyLayoutClient() {
 // Write the CURRENT on-screen arrangement (order + skip flags) into the overlay,
 // preserving overrides/customScenes/blackouts. Single primitive every structural
 // edit calls after mutating state.allScenes.
-async function persistArrangement() {
-  if (!state.showId) return
-  const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
-  layout.order = state.allScenes.map(s => {
+function orderFromScenes() {
+  return state.allScenes.map(s => {
     if (s.sceneRef.kind === 'master') {
       return s.skip ? { kind: 'master', sceneId: s.sceneRef.sceneId, skip: true }
                     : { kind: 'master', sceneId: s.sceneRef.sceneId }
@@ -492,7 +491,29 @@ async function persistArrangement() {
     if (s.sceneRef.kind === 'custom') return { kind: 'custom', id: s.sceneRef.id }
     return { kind: 'blackout', id: s.sceneRef.id }
   })
+}
+
+async function persistArrangement() {
+  if (!state.showId) return
+  const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
+  layout.order = orderFromScenes()
   await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
+}
+
+// Insert a blackout cue right after the current scene (or at the end).
+async function insertBlackout() {
+  if (isEditLocked() || !state.showId) return
+  const id = 'bo-' + crypto.randomUUID()
+  const bo = { id, label: 'Blackout', createdAt: new Date().toISOString() }
+  const at = state.backdropIndex >= 0 ? state.backdropIndex + 1 : state.allScenes.length
+  state.allScenes.splice(at, 0, flattenBlackout(bo))
+  const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
+  layout.blackouts = layout.blackouts || {}
+  layout.blackouts[id] = bo
+  layout.order = orderFromScenes()
+  await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
+  renderSceneList(); updateCenterPanel(); updateNextPanel()
+  scrollSceneIntoView(at)
 }
 
 async function toggleSkip(flatIndex) {
@@ -1074,7 +1095,7 @@ function updateEditModeLockBtn(locked) {
 // Enable/disable every structural (Custom-Mode) control based on the lock.
 function syncEditModeGates() {
   const locked = isEditLocked()
-  ;[el.btnResetShow].forEach(btn => {
+  ;[el.btnResetShow, el.btnInsertBlackout].forEach(btn => {
     if (!btn) return
     btn.disabled = locked
     btn.style.opacity = locked ? '0.4' : ''
@@ -1089,6 +1110,8 @@ el.btnEditModeLock.addEventListener('click', () => {
   updateEditModeLockBtn(appSettings.editModeLocked)
   window.showrunner.saveAppSettings(appSettings)
 })
+
+el.btnInsertBlackout.addEventListener('click', insertBlackout)
 
 // ── Reset to Original (full reset — the safety net) ──────────────────────────
 el.btnResetShow.addEventListener('click', async () => {
