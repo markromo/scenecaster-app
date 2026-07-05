@@ -78,6 +78,16 @@ function updateDaysBadge(daysRemaining) {
 const prevA = document.getElementById('preview-a')
 const prevB = document.getElementById('preview-b')
 const prevStill = document.getElementById('preview-still')
+const previewMissingEl = document.getElementById('preview-missing')
+
+function fileLabelFromSrc(src) {
+  try { return decodeURIComponent(src).split('/').pop().split('?')[0] } catch { return 'this file' }
+}
+function showPreviewMissing(src) {
+  previewMissingEl.textContent = `⚠ Video file not found: ${fileLabelFromSrc(src)}`
+  previewMissingEl.classList.remove('hidden')
+}
+function hidePreviewMissing() { previewMissingEl.classList.add('hidden') }
 let prevTop = prevA
 let prevBot = prevB
 
@@ -87,6 +97,8 @@ function previewStill(src, dissolve, colorSettings) {
   prevA.ontimeupdate = null; prevB.ontimeupdate = null
   prevStill.style.transition = `opacity ${d}s ease-in-out`
   prevStill.style.filter = colorSettings ? makeColorFilter(colorSettings) : 'none'
+  prevStill.onerror = () => showPreviewMissing(src)
+  prevStill.onload = () => hidePreviewMissing()
   prevStill.src = src
   requestAnimationFrame(() => {
     prevStill.style.opacity = '1'
@@ -103,6 +115,7 @@ function previewHideStill(dissolve) {
 function previewCrossfadeTo(src, dissolve, looping, colorSettings) {
   prevBot.ontimeupdate = null
   prevTop.ontimeupdate = null
+  prevBot.onerror = () => showPreviewMissing(src)  // 0-byte/missing file — surface it, don't just freeze silently
   prevBot.src = src
   // Apply new scene's color to incoming video — prevTop keeps its own filter throughout
   prevBot.style.filter = colorSettings ? makeColorFilter(colorSettings) : 'none'
@@ -113,6 +126,7 @@ function previewCrossfadeTo(src, dissolve, looping, colorSettings) {
   prevTop.style.zIndex = '1'
 
   function startFade() {
+    hidePreviewMissing()
     prevBot.play().catch(() => {})
     if (dissolve <= 0) {
       prevBot.style.transition = 'none'
@@ -163,7 +177,7 @@ function previewCommand({ type, src, dissolve, loop, colorSettings }) {
   if (type === 'play') { previewHideStill(d); previewCrossfadeTo(src, d, loop || false, colorSettings) }
   if (type === 'still') previewStill(src, d, colorSettings)
   if (type === 'black') {
-    previewHideStill(d)
+    previewHideStill(d); hidePreviewMissing()
     prevA.ontimeupdate = null; prevB.ontimeupdate = null
     prevA.style.transition = `opacity ${d}s ease-in-out`
     prevB.style.transition = `opacity ${d}s ease-in-out`

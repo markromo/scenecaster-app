@@ -80,6 +80,8 @@ kbd{display:inline-block;min-width:14px;padding:2px 7px;font:600 12px ui-monospa
 .preview-container.playing{border-color:rgba(255,90,13,0.55);box-shadow:0 0 0 1px rgba(255,90,13,0.15)}
 .preview-vid{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;opacity:0}
 .preview-still{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;opacity:0;z-index:3;transition:opacity .3s ease-in-out}
+.preview-missing{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:0 24px;background:rgba(20,20,20,0.92);color:#fff;font-size:13px;font-weight:600;z-index:4}
+.preview-missing.hidden{display:none}
 
 /* Center lanes */
 .center-panel{flex:1;display:flex;flex-direction:column;gap:1px;background:var(--border)}
