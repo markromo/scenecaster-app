@@ -386,6 +386,7 @@ function flattenScene(masterScene, meta, override, skip) {
     originalPosition: meta.originalPosition,
     originalCueNumber: masterScene.id,
     skip: !!skip,
+    dissolveOverride: override?.dissolveOverride != null ? override.dissolveOverride : null,
     name: masterScene.backdrop?.label || masterScene.scene_label,
     video_file: masterScene.backdrop?.file,
     backdrop_trigger,
@@ -406,6 +407,7 @@ function flattenCustomScene(cs, skip) {
     renamable: true,
     origin: cs.origin,
     isStill: !!cs.still,
+    dissolveOverride: cs.dissolveOverride != null ? cs.dissolveOverride : null,
     name: cs.name || cs.backdrop?.label || 'Custom Scene',
     video_file: cs.backdrop?.file || null,
     backdrop_trigger: cs.backdrop?.trigger || '',
@@ -618,6 +620,8 @@ function openSceneMenu(flatIndex, anchor) {
   if (kind === 'master' || kind === 'custom') items.push([scene.skip ? 'Unskip' : 'Skip', () => toggleSkip(flatIndex)])
   if (kind === 'custom') items.push(['Rename', () => renameScene(flatIndex)])
   if (kind === 'master' || kind === 'custom') items.push(['Copy', () => duplicateScene(flatIndex)])
+  items.push([scene.dissolveOverride != null ? `Dissolve: ${scene.dissolveOverride}s…` : 'Dissolve…', () => setSceneDissolve(flatIndex)])
+  if (scene.dissolveOverride != null) items.push(['Use default dissolve', () => clearSceneDissolve(flatIndex)])
   items.push(['Delete', () => deleteScene(flatIndex)])
 
   const menu = document.createElement('div')
@@ -709,6 +713,45 @@ async function renameScene(flatIndex) {
   layout.order = orderFromScenes()
   await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
   renderSceneList(); updateCenterPanel(); updateNextPanel()
+}
+
+// Per-scene dissolve length: override the global dissolve for the transition into
+// this scene. Persists to the overlay (master → overrides, custom → the scene).
+async function setSceneDissolve(flatIndex) {
+  if (isEditLocked() || !state.showId) return
+  const scene = state.allScenes[flatIndex]
+  if (!scene) return
+  const cur = scene.dissolveOverride != null ? scene.dissolveOverride : state.dissolveTime
+  const input = window.prompt('Dissolve length for this scene, in seconds (0–3):', String(cur))
+  if (input == null) return
+  let v = parseFloat(input)
+  if (Number.isNaN(v)) return
+  v = Math.max(0, Math.min(3, Math.round(v * 10) / 10))
+  await pushUndo()
+  scene.dissolveOverride = v
+  const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
+  if (scene.sceneRef.kind === 'master') {
+    layout.overrides[scene.sceneRef.sceneId] = layout.overrides[scene.sceneRef.sceneId] || {}
+    layout.overrides[scene.sceneRef.sceneId].dissolveOverride = v
+  } else {
+    const cs = layout.customScenes?.[scene.sceneRef.id]; if (cs) cs.dissolveOverride = v
+  }
+  layout.order = orderFromScenes()
+  await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
+  renderSceneList()
+}
+async function clearSceneDissolve(flatIndex) {
+  if (isEditLocked() || !state.showId) return
+  const scene = state.allScenes[flatIndex]
+  if (!scene) return
+  await pushUndo()
+  scene.dissolveOverride = null
+  const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
+  if (scene.sceneRef.kind === 'master' && layout.overrides[scene.sceneRef.sceneId]) delete layout.overrides[scene.sceneRef.sceneId].dissolveOverride
+  if (scene.sceneRef.kind === 'custom' && layout.customScenes?.[scene.sceneRef.id]) layout.customScenes[scene.sceneRef.id].dissolveOverride = null
+  layout.order = orderFromScenes()
+  await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
+  renderSceneList()
 }
 
 // Duplicate a scene as a fully independent copy (own id → own color/cues/trigger/
@@ -855,9 +898,12 @@ function playCurrentBackdrop() {
   if (state.backdropIndex < 0 || !state.allScenes.length) return
   const scene = state.allScenes[state.backdropIndex]
   if (!scene) return
+  // Per-scene dissolve length overrides the global default for the transition
+  // INTO this scene; falls back to the global slider when not set.
+  const dissolve = scene.dissolveOverride != null ? scene.dissolveOverride : state.dissolveTime
   // Blackout entries have no video — advancing onto one goes to black.
   if (scene.kind === 'blackout') {
-    const cmd = { type: 'black', dissolve: state.dissolveTime }
+    const cmd = { type: 'black', dissolve }
     window.showrunner.sendToLed(cmd); previewCommand(cmd)
     return
   }
@@ -870,11 +916,11 @@ function playCurrentBackdrop() {
     : `file://${filePath}`
   if (scene.isStill) {
     // Stills hold (no loop) and display in an image layer.
-    window.showrunner.sendToLed({ type: 'still', src: `file://${filePath}`, dissolve: state.dissolveTime, ...cc })
-    previewCommand({ type: 'still', src: previewSrc, dissolve: state.dissolveTime, colorSettings: cc })
+    window.showrunner.sendToLed({ type: 'still', src: `file://${filePath}`, dissolve, ...cc })
+    previewCommand({ type: 'still', src: previewSrc, dissolve, colorSettings: cc })
   } else {
-    window.showrunner.sendToLed({ type: 'play', src: `file://${filePath}`, dissolve: state.dissolveTime, loop: true, ...cc })
-    previewCommand({ type: 'play', src: previewSrc, dissolve: state.dissolveTime, loop: true, colorSettings: cc })
+    window.showrunner.sendToLed({ type: 'play', src: `file://${filePath}`, dissolve, loop: true, ...cc })
+    previewCommand({ type: 'play', src: previewSrc, dissolve, loop: true, colorSettings: cc })
   }
   // Update sliders to show new scene's color settings
   el.ccBrightness.value = cc.brightness
