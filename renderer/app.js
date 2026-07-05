@@ -52,6 +52,7 @@ const el = {
   btnResetShow: document.getElementById('btn-reset-show'),
   btnInsertBlackout: document.getElementById('btn-insert-blackout'),
   btnUploadScene: document.getElementById('btn-upload-scene'),
+  btnRestartRun: document.getElementById('btn-restart-run'),
   colorPanel: document.getElementById('color-panel'),
   ccBrightness: document.getElementById('cc-brightness'),
   ccContrast: document.getElementById('cc-contrast'),
@@ -1254,6 +1255,18 @@ el.btnEditModeLock.addEventListener('click', () => {
 
 el.btnInsertBlackout.addEventListener('click', insertBlackout)
 el.btnUploadScene.addEventListener('click', uploadScene)
+
+// Reset playback position only (NOT a customization change) — restart the run
+// from the top: clear played dimming, reset cue pointers, black the wall. Safe
+// to use mid-show, so it is not gated by Edit Mode.
+function resetPlaybackPosition() {
+  state.backdropIndex = -1; state.lightingIndex = -1; state.lightingSubIndex = 0
+  state.playedScenes = new Set()
+  const cmd = { type: 'black', dissolve: 0 }
+  window.showrunner.sendToLed(cmd); previewCommand(cmd)
+  renderSceneList(); updateCenterPanel(); updateNextPanel()
+}
+el.btnRestartRun.addEventListener('click', resetPlaybackPosition)
 
 // ── Reset to Original (full reset — the safety net) ──────────────────────────
 el.btnResetShow.addEventListener('click', async () => {
