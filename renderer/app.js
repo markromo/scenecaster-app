@@ -139,6 +139,7 @@ function previewCrossfadeTo(src, dissolve, looping, colorSettings) {
     const newTop = prevBot; const newBot = prevTop
     prevTop = newTop; prevBot = newBot
     setTimeout(() => {
+      prevBot.onerror = null  // clearing src below is intentional cleanup, not a real load failure
       prevBot.loop = false; prevBot.pause(); prevBot.src = ''
       prevBot.style.transition = 'none'; prevBot.style.opacity = '0'
       prevBot.ontimeupdate = null
