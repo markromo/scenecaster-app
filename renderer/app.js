@@ -525,6 +525,38 @@ async function toggleSkip(flatIndex) {
   renderSceneList(); updateNextPanel()
 }
 
+// Duplicate a scene as a fully independent copy (own id → own color/cues/trigger/
+// position). Deep-copies presentation at creation; editing the original later
+// never affects the copy and vice-versa.
+async function duplicateScene(flatIndex) {
+  if (isEditLocked() || !state.showId) return
+  const src = state.allScenes[flatIndex]
+  if (!src || src.sceneRef.kind === 'blackout') return  // blackouts aren't duplicable
+  const id = 'cs-' + crypto.randomUUID()
+  const copyName = `${src.name || 'Scene'} (Copy)`
+  const cs = {
+    id,
+    origin: 'duplicate',
+    sourceSceneId: src.sceneRef.kind === 'master' ? src.sceneRef.sceneId : (src.sourceSceneId || null),
+    createdAt: new Date().toISOString(),
+    name: copyName,
+    renamable: true,
+    backdrop: { file: src.video_file || null, label: copyName, repeat: false, trigger: src.backdrop_trigger || '' },
+    lighting: { cues: (src.lighting_cues || []).map(c => ({ ...c })) },
+    mti_pages: src.mti_page || null,
+    dissolveOverride: null,
+  }
+  const at = flatIndex + 1
+  state.allScenes.splice(at, 0, flattenCustomScene(cs))
+  const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
+  layout.customScenes = layout.customScenes || {}
+  layout.customScenes[id] = cs
+  layout.order = orderFromScenes()
+  await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
+  renderSceneList(); updateCenterPanel(); updateNextPanel()
+  scrollSceneIntoView(at)
+}
+
 // ── Scene list ──────────────────────────────────────────────────────────────────
 function renderSceneList() {
   if (!state.show) return
@@ -547,14 +579,25 @@ function renderSceneList() {
     const pageSnippet = scene.mti_page ? `<div class="scene-page">p.${scene.mti_page}</div>` : ''
     item.innerHTML = `<div class="scene-name">${escHtml(scene.name)}</div>${triggerSnippet}${pageSnippet}`
     item.addEventListener('click', () => jumpToScene(flatIndex))
-    // In Edit Mode, master scenes get a Skip/Unskip toggle (stays in list, won't play).
-    if (!isEditLocked() && scene.sceneRef.kind === 'master') {
-      const skipBtn = document.createElement('button')
-      skipBtn.className = 'scene-skip-btn'
-      skipBtn.textContent = scene.skip ? 'Unskip' : 'Skip'
-      skipBtn.title = scene.skip ? 'Include this scene again' : "Skip this scene — stays in the list but won't play"
-      skipBtn.addEventListener('click', e => { e.stopPropagation(); toggleSkip(flatIndex) })
-      item.appendChild(skipBtn)
+    // In Edit Mode, non-blackout rows get inline edit controls (Skip, Copy).
+    if (!isEditLocked() && scene.sceneRef.kind !== 'blackout') {
+      const actions = document.createElement('div')
+      actions.className = 'scene-row-actions'
+      if (scene.sceneRef.kind === 'master') {
+        const skipBtn = document.createElement('button')
+        skipBtn.className = 'scene-row-btn'
+        skipBtn.textContent = scene.skip ? 'Unskip' : 'Skip'
+        skipBtn.title = scene.skip ? 'Include this scene again' : "Skip this scene — stays in the list but won't play"
+        skipBtn.addEventListener('click', e => { e.stopPropagation(); toggleSkip(flatIndex) })
+        actions.appendChild(skipBtn)
+      }
+      const copyBtn = document.createElement('button')
+      copyBtn.className = 'scene-row-btn'
+      copyBtn.textContent = 'Copy'
+      copyBtn.title = 'Duplicate this scene as an independent copy'
+      copyBtn.addEventListener('click', e => { e.stopPropagation(); duplicateScene(flatIndex) })
+      actions.appendChild(copyBtn)
+      item.appendChild(actions)
     }
     el.sceneList.appendChild(item)
   })

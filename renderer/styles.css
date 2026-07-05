@@ -54,8 +54,9 @@ p{font-size:14px;line-height:1.6;margin-bottom:1rem}
 .scene-item{position:relative}
 .scene-item.skipped{opacity:.4}
 .scene-item.skipped .scene-name{text-decoration:line-through}
-.scene-skip-btn{position:absolute;top:6px;right:8px;font-size:10px;font-weight:600;padding:2px 7px;border:1px solid var(--border);border-radius:4px;background:var(--bg-surface);color:var(--muted);cursor:pointer;z-index:2}
-.scene-skip-btn:hover{background:var(--bg-hover);color:var(--text)}
+.scene-row-actions{position:absolute;top:6px;right:8px;display:flex;gap:4px;z-index:2}
+.scene-row-btn{font-size:10px;font-weight:600;padding:2px 7px;border:1px solid var(--border);border-radius:4px;background:var(--bg-surface);color:var(--muted);cursor:pointer}
+.scene-row-btn:hover{background:var(--bg-hover);color:var(--text)}
 .help-shortcuts{width:100%;border-collapse:collapse;margin:4px 0 8px}
 .help-shortcuts td{padding:8px 10px;font-size:14px;color:var(--text);border-bottom:1px solid var(--border)}
 .help-shortcuts td:first-child{white-space:nowrap;width:1%}
