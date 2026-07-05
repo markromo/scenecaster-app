@@ -51,6 +51,7 @@ const el = {
   btnEditModeLock: document.getElementById('btn-edit-mode-lock'),
   btnResetShow: document.getElementById('btn-reset-show'),
   btnInsertBlackout: document.getElementById('btn-insert-blackout'),
+  btnUploadScene: document.getElementById('btn-upload-scene'),
   colorPanel: document.getElementById('color-panel'),
   ccBrightness: document.getElementById('cc-brightness'),
   ccContrast: document.getElementById('cc-contrast'),
@@ -545,6 +546,51 @@ async function moveScene(flatIndex, dir) {
   renderSceneList(); updateCenterPanel(); updateNextPanel(); scrollSceneIntoView(j)
 }
 
+// Upload the director's own video(s) as new independent scenes. Reuses the
+// existing import-video picker (copies files into VIDEOS_DIR, which the media
+// server already serves). Inserted after the current scene; videos always loop.
+async function uploadScene() {
+  if (isEditLocked() || !state.showId) return
+  const files = await window.showrunner.importVideo()
+  if (!files || !files.length) return
+  const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
+  layout.customScenes = layout.customScenes || {}
+  let at = state.backdropIndex >= 0 ? state.backdropIndex + 1 : state.allScenes.length
+  for (const f of files) {
+    const id = 'cs-' + crypto.randomUUID()
+    const name = f.name || 'Uploaded Scene'
+    const cs = {
+      id, origin: 'upload', sourceSceneId: null, createdAt: new Date().toISOString(),
+      name, renamable: true,
+      backdrop: { file: f.filename, label: name, repeat: false, trigger: '' },
+      lighting: { cues: [] }, mti_pages: null, dissolveOverride: null,
+    }
+    layout.customScenes[id] = cs
+    state.allScenes.splice(at, 0, flattenCustomScene(cs)); at++
+  }
+  layout.order = orderFromScenes()
+  await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
+  renderSceneList(); updateCenterPanel(); updateNextPanel(); scrollSceneIntoView(at - 1)
+}
+
+// Rename an uploaded/duplicated scene (custom scenes only — our scene names are
+// read-only). Persists the new name to the overlay.
+async function renameScene(flatIndex) {
+  if (isEditLocked() || !state.showId) return
+  const s = state.allScenes[flatIndex]
+  if (!s || s.sceneRef.kind !== 'custom') return
+  const next = window.prompt('Rename this scene:', s.name || '')
+  if (next == null) return
+  const name = next.trim() || s.name
+  s.name = name
+  const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
+  const cs = layout.customScenes?.[s.sceneRef.id]
+  if (cs) { cs.name = name; if (cs.backdrop) cs.backdrop.label = name }
+  layout.order = orderFromScenes()
+  await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
+  renderSceneList(); updateCenterPanel(); updateNextPanel()
+}
+
 // Duplicate a scene as a fully independent copy (own id → own color/cues/trigger/
 // position). Deep-copies presentation at creation; editing the original later
 // never affects the copy and vice-versa.
@@ -641,6 +687,9 @@ function renderSceneList() {
       if (flatIndex < state.allScenes.length - 1) addBtn('↓', 'Move down', () => moveScene(flatIndex, 1))
       if (kind === 'master') {
         addBtn(scene.skip ? 'Unskip' : 'Skip', scene.skip ? 'Include this scene again' : "Skip — stays in the list but won't play", () => toggleSkip(flatIndex))
+      }
+      if (kind === 'custom') {
+        addBtn('Rename', 'Rename this scene', () => renameScene(flatIndex))
       }
       if (kind === 'master' || kind === 'custom') {
         addBtn('Copy', 'Duplicate this scene as an independent copy', () => duplicateScene(flatIndex))
@@ -1187,7 +1236,7 @@ function updateEditModeLockBtn(locked) {
 // Enable/disable every structural (Custom-Mode) control based on the lock.
 function syncEditModeGates() {
   const locked = isEditLocked()
-  ;[el.btnResetShow, el.btnInsertBlackout].forEach(btn => {
+  ;[el.btnResetShow, el.btnInsertBlackout, el.btnUploadScene].forEach(btn => {
     if (!btn) return
     btn.disabled = locked
     btn.style.opacity = locked ? '0.4' : ''
@@ -1204,6 +1253,7 @@ el.btnEditModeLock.addEventListener('click', () => {
 })
 
 el.btnInsertBlackout.addEventListener('click', insertBlackout)
+el.btnUploadScene.addEventListener('click', uploadScene)
 
 // ── Reset to Original (full reset — the safety net) ──────────────────────────
 el.btnResetShow.addEventListener('click', async () => {
