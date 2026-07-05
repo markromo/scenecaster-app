@@ -574,8 +574,16 @@ function createLedWindow() {
 }
 
 function createWindows() {
+  const { screen } = require('electron')
+  const primaryDisplay = screen.getPrimaryDisplay()
+  // Open the operator window centered on the MAIN display, so it never lands on a
+  // secondary or failing screen where you can't reach it.
+  const wa = primaryDisplay.workArea
+  const winW = Math.min(1600, wa.width), winH = Math.min(1000, wa.height)
   mainWindow = new BrowserWindow({
-    width: 1600, height: 1000, minWidth: 900, minHeight: 600,
+    x: wa.x + Math.round((wa.width - winW) / 2),
+    y: wa.y + Math.round((wa.height - winH) / 2),
+    width: winW, height: winH, minWidth: 900, minHeight: 600,
     backgroundColor: '#FFFFFF',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     fullscreenable: false,
@@ -583,18 +591,22 @@ function createWindows() {
   })
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'))
 
-  // Auto-open LED window if external display is already connected at launch
-  const { screen } = require('electron')
-  const primaryDisplay = screen.getPrimaryDisplay()
-  if (screen.getAllDisplays().find(d => d.id !== primaryDisplay.id)) {
-    createLedWindow()
+  // Auto-open the fullscreen LED output window ONLY in the packaged (customer)
+  // app. In dev (npm start) skip it: a frameless, always-on-top, fullscreen
+  // window on a secondary/misconfigured display can cover everything and trap
+  // the mouse/keyboard. Use the "Open External Screen" button to open it manually
+  // during dev when you actually want to test projector output.
+  if (app.isPackaged) {
+    // Auto-open LED window if external display is already connected at launch
+    if (screen.getAllDisplays().find(d => d.id !== primaryDisplay.id)) {
+      createLedWindow()
+    }
+    // Auto-open LED window whenever a display is plugged in
+    screen.on('display-added', () => {
+      if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
+      setTimeout(() => createLedWindow(), 500) // small delay lets OS register the display
+    })
   }
-
-  // Auto-open LED window whenever a display is plugged in
-  screen.on('display-added', () => {
-    if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
-    setTimeout(() => createLedWindow(), 500) // small delay lets OS register the display
-  })
 
   // Heartbeat — keeps video alive when macOS suspends renderer processes
   setInterval(() => {
