@@ -557,6 +557,28 @@ async function duplicateScene(flatIndex) {
   scrollSceneIntoView(at)
 }
 
+// Delete a scene from the running order. Our originals (master) are only removed
+// from the order and come back via Reset; the customer's own added/duplicated
+// scenes and blackouts are removed outright.
+async function deleteScene(flatIndex) {
+  if (isEditLocked() || !state.showId) return
+  const s = state.allScenes[flatIndex]
+  if (!s) return
+  if (s.sceneRef.kind === 'custom') {
+    if (!window.confirm(`Delete "${s.name}"?\n\nThis added/duplicated scene will be removed for good. (Your original show is unaffected — use Reset to Original to restore our scenes.)`)) return
+  }
+  state.allScenes.splice(flatIndex, 1)
+  const fix = i => i > flatIndex ? i - 1 : (i === flatIndex ? -1 : i)
+  state.backdropIndex = fix(state.backdropIndex)
+  state.lightingIndex = fix(state.lightingIndex)
+  const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
+  if (s.sceneRef.kind === 'custom' && layout.customScenes) delete layout.customScenes[s.sceneRef.id]
+  if (s.sceneRef.kind === 'blackout' && layout.blackouts) delete layout.blackouts[s.sceneRef.id]
+  layout.order = orderFromScenes()
+  await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
+  renderSceneList(); updateCenterPanel(); updateNextPanel()
+}
+
 // ── Scene list ──────────────────────────────────────────────────────────────────
 function renderSceneList() {
   if (!state.show) return
@@ -579,24 +601,24 @@ function renderSceneList() {
     const pageSnippet = scene.mti_page ? `<div class="scene-page">p.${scene.mti_page}</div>` : ''
     item.innerHTML = `<div class="scene-name">${escHtml(scene.name)}</div>${triggerSnippet}${pageSnippet}`
     item.addEventListener('click', () => jumpToScene(flatIndex))
-    // In Edit Mode, non-blackout rows get inline edit controls (Skip, Copy).
-    if (!isEditLocked() && scene.sceneRef.kind !== 'blackout') {
+    // In Edit Mode, rows get inline edit controls (shown on hover).
+    if (!isEditLocked()) {
+      const kind = scene.sceneRef.kind
       const actions = document.createElement('div')
       actions.className = 'scene-row-actions'
-      if (scene.sceneRef.kind === 'master') {
-        const skipBtn = document.createElement('button')
-        skipBtn.className = 'scene-row-btn'
-        skipBtn.textContent = scene.skip ? 'Unskip' : 'Skip'
-        skipBtn.title = scene.skip ? 'Include this scene again' : "Skip this scene — stays in the list but won't play"
-        skipBtn.addEventListener('click', e => { e.stopPropagation(); toggleSkip(flatIndex) })
-        actions.appendChild(skipBtn)
+      const addBtn = (label, title, fn) => {
+        const b = document.createElement('button')
+        b.className = 'scene-row-btn'; b.textContent = label; b.title = title
+        b.addEventListener('click', e => { e.stopPropagation(); fn() })
+        actions.appendChild(b)
       }
-      const copyBtn = document.createElement('button')
-      copyBtn.className = 'scene-row-btn'
-      copyBtn.textContent = 'Copy'
-      copyBtn.title = 'Duplicate this scene as an independent copy'
-      copyBtn.addEventListener('click', e => { e.stopPropagation(); duplicateScene(flatIndex) })
-      actions.appendChild(copyBtn)
+      if (kind === 'master') {
+        addBtn(scene.skip ? 'Unskip' : 'Skip', scene.skip ? 'Include this scene again' : "Skip — stays in the list but won't play", () => toggleSkip(flatIndex))
+      }
+      if (kind === 'master' || kind === 'custom') {
+        addBtn('Copy', 'Duplicate this scene as an independent copy', () => duplicateScene(flatIndex))
+      }
+      addBtn('Delete', kind === 'master' ? 'Remove from the running order (restore with Reset)' : 'Remove this item', () => deleteScene(flatIndex))
       item.appendChild(actions)
     }
     el.sceneList.appendChild(item)
