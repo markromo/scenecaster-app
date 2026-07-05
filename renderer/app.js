@@ -426,6 +426,7 @@ function flattenBlackout(bo) {
     originalPosition: null,
     originalCueNumber: null,
     skip: false,
+    dissolveOverride: bo.dissolveOverride != null ? bo.dissolveOverride : null,
     name: bo.label || 'Blackout',
     video_file: null,          // null → playback sends a black command instead of a video
     backdrop_trigger: '',
@@ -620,8 +621,8 @@ function openSceneMenu(flatIndex, anchor) {
   const items = []
   if (kind === 'master' || kind === 'custom') items.push([scene.skip ? 'Unskip' : 'Skip', () => toggleSkip(flatIndex)])
   if (kind === 'custom') items.push(['Rename', () => renameScene(flatIndex)])
-  if (kind === 'master' || kind === 'custom') items.push(['Copy', () => duplicateScene(flatIndex)])
-  items.push([scene.dissolveOverride != null ? `Dissolve: ${scene.dissolveOverride}s…` : 'Dissolve…', () => setSceneDissolve(flatIndex)])
+  items.push(['Copy', () => duplicateScene(flatIndex)])
+  items.push([scene.dissolveOverride != null ? `Set Dissolve (${scene.dissolveOverride}s)…` : 'Set Dissolve…', () => setSceneDissolve(flatIndex)])
   if (scene.dissolveOverride != null) items.push(['Use default dissolve', () => clearSceneDissolve(flatIndex)])
   items.push(['Delete', () => deleteScene(flatIndex)])
 
@@ -734,8 +735,10 @@ async function setSceneDissolve(flatIndex) {
   if (scene.sceneRef.kind === 'master') {
     layout.overrides[scene.sceneRef.sceneId] = layout.overrides[scene.sceneRef.sceneId] || {}
     layout.overrides[scene.sceneRef.sceneId].dissolveOverride = v
-  } else {
+  } else if (scene.sceneRef.kind === 'custom') {
     const cs = layout.customScenes?.[scene.sceneRef.id]; if (cs) cs.dissolveOverride = v
+  } else if (scene.sceneRef.kind === 'blackout') {
+    const bo = layout.blackouts?.[scene.sceneRef.id]; if (bo) bo.dissolveOverride = v
   }
   layout.order = orderFromScenes()
   await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
@@ -750,6 +753,7 @@ async function clearSceneDissolve(flatIndex) {
   const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
   if (scene.sceneRef.kind === 'master' && layout.overrides[scene.sceneRef.sceneId]) delete layout.overrides[scene.sceneRef.sceneId].dissolveOverride
   if (scene.sceneRef.kind === 'custom' && layout.customScenes?.[scene.sceneRef.id]) layout.customScenes[scene.sceneRef.id].dissolveOverride = null
+  if (scene.sceneRef.kind === 'blackout' && layout.blackouts?.[scene.sceneRef.id]) layout.blackouts[scene.sceneRef.id].dissolveOverride = null
   layout.order = orderFromScenes()
   await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
   renderSceneList()
@@ -772,7 +776,22 @@ function nextCopyName(sourceName) {
 async function duplicateScene(flatIndex) {
   if (isEditLocked() || !state.showId) return
   const src = state.allScenes[flatIndex]
-  if (!src || src.sceneRef.kind === 'blackout') return  // blackouts aren't duplicable
+  if (!src) return
+  // Copying a blackout just inserts another blackout right after it — same
+  // action as the Blackout utility button, offered inline for convenience.
+  if (src.sceneRef.kind === 'blackout') {
+    await pushUndo()
+    const id = 'bo-' + crypto.randomUUID()
+    const bo = { id, label: 'Blackout', createdAt: new Date().toISOString() }
+    state.allScenes.splice(flatIndex + 1, 0, flattenBlackout(bo))
+    const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
+    layout.blackouts = layout.blackouts || {}
+    layout.blackouts[id] = bo
+    layout.order = orderFromScenes()
+    await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
+    renderSceneList(); updateCenterPanel(); updateNextPanel(); scrollSceneIntoView(flatIndex + 1)
+    return
+  }
   await pushUndo()
   const id = 'cs-' + crypto.randomUUID()
   const copyName = nextCopyName(src.name)
@@ -848,7 +867,8 @@ function renderSceneList() {
     const triggerSnippet = scene.backdrop_trigger
       ? `<div class="scene-trigger">${scene.backdrop_trigger}</div>` : ''
     const pageSnippet = scene.mti_page ? `<div class="scene-page">p.${scene.mti_page}</div>` : ''
-    item.innerHTML = `<div class="scene-name">${escHtml(scene.name)}</div>${triggerSnippet}${pageSnippet}`
+    const dissolveBadge = scene.dissolveOverride != null ? `<span class="scene-dissolve-badge" title="Custom dissolve into this scene">⟳ ${scene.dissolveOverride}s</span>` : ''
+    item.innerHTML = `<div class="scene-name">${escHtml(scene.name)}${dissolveBadge}</div>${triggerSnippet}${pageSnippet}`
     item.addEventListener('click', () => jumpToScene(flatIndex))
     // In Edit Mode: rows are draggable to reorder, and expose a single ⋯ menu.
     if (!isEditLocked()) {
@@ -1442,6 +1462,7 @@ function resetPlaybackPosition() {
   const cmd = { type: 'black', dissolve: 0 }
   window.showrunner.sendToLed(cmd); previewCommand(cmd)
   renderSceneList(); updateCenterPanel(); updateNextPanel()
+  el.sceneList.scrollTop = 0  // queue is ready to run — first scene visible and one click away
 }
 el.btnRestartRun.addEventListener('click', resetPlaybackPosition)
 
