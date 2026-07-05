@@ -28,27 +28,37 @@ function startMediaServer(folderPath) {
       if (!fs.existsSync(filePath)) {
         filePath = findInDir(folderPath, path.basename(filename)) || filePath
       }
-      try {
-        const stat = fs.statSync(filePath)
-        const range = req.headers.range
-        const ext = path.extname(filePath).slice(1).toLowerCase()
-        const mime = { mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska' }[ext] || 'video/mp4'
-        if (range) {
-          const [s, e] = range.replace(/bytes=/, '').split('-')
-          const start = parseInt(s, 10)
-          const end = e ? parseInt(e, 10) : stat.size - 1
-          res.writeHead(206, {
-            'Content-Range': `bytes ${start}-${end}/${stat.size}`,
-            'Accept-Ranges': 'bytes',
-            'Content-Length': end - start + 1,
-            'Content-Type': mime,
-          })
-          fs.createReadStream(filePath, { start, end }).pipe(res)
-        } else {
-          res.writeHead(200, { 'Content-Length': stat.size, 'Content-Type': mime, 'Accept-Ranges': 'bytes' })
-          fs.createReadStream(filePath).pipe(res)
+      // Only send an error status if we haven't already started the response;
+      // once headers are out, just tear the socket down — never throw.
+      const fail = (code) => { if (!res.headersSent) { res.writeHead(code); res.end('Not available') } else { res.destroy() } }
+
+      let stat
+      try { stat = fs.statSync(filePath) } catch { return fail(404) }
+      // Missing, non-file, or empty/truncated (e.g. a failed download) → 404, not a crash.
+      if (!stat.isFile() || stat.size === 0) return fail(404)
+
+      const ext = path.extname(filePath).slice(1).toLowerCase()
+      const mime = { mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska' }[ext] || 'video/mp4'
+      const range = req.headers.range
+
+      let start = 0, end = stat.size - 1, status = 200
+      let headers = { 'Content-Length': stat.size, 'Content-Type': mime, 'Accept-Ranges': 'bytes' }
+      if (range) {
+        const m = /bytes=(\d*)-(\d*)/.exec(range)
+        start = m && m[1] ? parseInt(m[1], 10) : 0
+        end = m && m[2] ? parseInt(m[2], 10) : stat.size - 1
+        if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= stat.size) {
+          res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` }); res.end(); return
         }
-      } catch { res.writeHead(404); res.end('Not found') }
+        end = Math.min(end, stat.size - 1)
+        status = 206
+        headers = { 'Content-Range': `bytes ${start}-${end}/${stat.size}`, 'Accept-Ranges': 'bytes', 'Content-Length': end - start + 1, 'Content-Type': mime }
+      }
+
+      res.writeHead(status, headers)
+      const stream = fs.createReadStream(filePath, { start, end })
+      stream.on('error', () => res.destroy()) // read error mid-stream → tear down, don't crash
+      stream.pipe(res)
     })
     mediaServer.listen(0, '127.0.0.1', () => resolve(mediaServer.address().port))
   })
