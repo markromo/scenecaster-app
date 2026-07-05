@@ -108,6 +108,8 @@
         <div id="preview-container" class="preview-container">
           <video id="preview-a" class="preview-vid" muted playsinline></video>
           <video id="preview-b" class="preview-vid" muted playsinline></video>
+          <img id="preview-still" class="preview-still" alt=""/>
+          <div id="preview-missing" class="preview-missing hidden">⚠ Video file not found on disk</div>
         </div>
         <div id="trigger-toolbar" class="trigger-toolbar hidden">
           <button class="trigger-fmt-btn" id="trigger-bold" title="Bold"><strong>B</strong></button>
@@ -174,7 +176,14 @@
       </div>
       <div class="utility-buttons">
         <button id="btn-open-led" class="key-btn key-orange utility-btn" onclick="window.showrunner.openLedWindow()">Open External Screen</button>
-        <button id="btn-rear-projection" class="key-btn key-neutral utility-btn">Rear Projection</button>
+        <button id="btn-rear-projection" class="key-btn key-neutral utility-btn">📽 Rear Projection</button>
+        <button id="btn-edit-mode-lock" class="key-btn key-neutral utility-btn" title="Lock structural edits during a live show">🔓 Edit Mode</button>
+        <button id="btn-upload-scene" class="key-btn key-neutral utility-btn" title="Add your own video as a new scene">🎬 Upload Video</button>
+        <button id="btn-upload-still" class="key-btn key-neutral utility-btn" title="Add your own still image (holds until you press B)">🖼 Upload Still</button>
+        <button id="btn-insert-blackout" class="key-btn key-neutral utility-btn" title="Insert a blackout after the current scene">＋ Blackout</button>
+        <button id="btn-restart-run" class="key-btn key-neutral utility-btn" title="Restart the run from the top (does not change customizations)">⏮ Restart Run</button>
+        <button id="btn-reset-show" class="key-btn key-neutral utility-btn" title="Discard all customizations and restore the original show">↩︎ Reset to Original</button>
+        <button id="btn-cue-sheet" class="key-btn key-neutral utility-btn" title="Export a printable PDF cue sheet of your customized show">🖨 Cue Sheet (PDF)</button>
       </div>
     </aside>
 
@@ -187,7 +196,7 @@
       <input type="range" id="dissolve-slider" min="0.1" max="3" step="0.1" value="1"/>
       <span id="dissolve-label">1.0s</span>
     </label>
-    <span class="shortcut-hint">B = background cue &nbsp;·&nbsp; L = lighting cue &nbsp;·&nbsp; Space = fade to black</span>
+    <span class="shortcut-hint">B = background cue &nbsp;·&nbsp; L = lighting cue &nbsp;·&nbsp; Space = fade to black &nbsp;·&nbsp; ? = help</span>
   </div>
 
 </div>
@@ -202,6 +211,36 @@
     <div class="modal-buttons">
       <button class="modal-btn-cancel" id="modal-cancel">Cancel</button>
       <button class="modal-btn-save" id="modal-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="input-modal" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-title" id="input-modal-title">Enter a value</div>
+    <input type="text" id="input-modal-field" class="input-modal-field"/>
+    <div class="modal-buttons">
+      <button class="modal-btn-cancel" id="input-modal-cancel">Cancel</button>
+      <button class="modal-btn-save" id="input-modal-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="help-overlay" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-title">Keyboard Shortcuts</div>
+    <table class="help-shortcuts">
+      <tr><td><kbd>B</kbd></td><td>Advance the backdrop (next scene video)</td></tr>
+      <tr><td><kbd>L</kbd></td><td>Advance the lighting cue</td></tr>
+      <tr><td><kbd>←</kbd></td><td>Step back one lighting cue</td></tr>
+      <tr><td><kbd>Space</kbd></td><td>Fade to black (blackout)</td></tr>
+      <tr><td><kbd>⌘</kbd> <kbd>Z</kbd></td><td>Undo the last edit (Edit Mode)</td></tr>
+      <tr><td><kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>Z</kbd></td><td>Redo (Edit Mode)</td></tr>
+      <tr><td><kbd>?</kbd> <span class="help-or">or</span> <kbd>H</kbd></td><td>Show / hide this help</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>Close this help</td></tr>
+    </table>
+    <div class="modal-buttons">
+      <button class="modal-btn-save" id="help-close">Got it</button>
     </div>
   </div>
 </div>

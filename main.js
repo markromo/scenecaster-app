@@ -28,27 +28,37 @@ function startMediaServer(folderPath) {
       if (!fs.existsSync(filePath)) {
         filePath = findInDir(folderPath, path.basename(filename)) || filePath
       }
-      try {
-        const stat = fs.statSync(filePath)
-        const range = req.headers.range
-        const ext = path.extname(filePath).slice(1).toLowerCase()
-        const mime = { mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska' }[ext] || 'video/mp4'
-        if (range) {
-          const [s, e] = range.replace(/bytes=/, '').split('-')
-          const start = parseInt(s, 10)
-          const end = e ? parseInt(e, 10) : stat.size - 1
-          res.writeHead(206, {
-            'Content-Range': `bytes ${start}-${end}/${stat.size}`,
-            'Accept-Ranges': 'bytes',
-            'Content-Length': end - start + 1,
-            'Content-Type': mime,
-          })
-          fs.createReadStream(filePath, { start, end }).pipe(res)
-        } else {
-          res.writeHead(200, { 'Content-Length': stat.size, 'Content-Type': mime, 'Accept-Ranges': 'bytes' })
-          fs.createReadStream(filePath).pipe(res)
+      // Only send an error status if we haven't already started the response;
+      // once headers are out, just tear the socket down — never throw.
+      const fail = (code) => { if (!res.headersSent) { res.writeHead(code); res.end('Not available') } else { res.destroy() } }
+
+      let stat
+      try { stat = fs.statSync(filePath) } catch { return fail(404) }
+      // Missing, non-file, or empty/truncated (e.g. a failed download) → 404, not a crash.
+      if (!stat.isFile() || stat.size === 0) return fail(404)
+
+      const ext = path.extname(filePath).slice(1).toLowerCase()
+      const mime = { mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' }[ext] || 'video/mp4'
+      const range = req.headers.range
+
+      let start = 0, end = stat.size - 1, status = 200
+      let headers = { 'Content-Length': stat.size, 'Content-Type': mime, 'Accept-Ranges': 'bytes' }
+      if (range) {
+        const m = /bytes=(\d*)-(\d*)/.exec(range)
+        start = m && m[1] ? parseInt(m[1], 10) : 0
+        end = m && m[2] ? parseInt(m[2], 10) : stat.size - 1
+        if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= stat.size) {
+          res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` }); res.end(); return
         }
-      } catch { res.writeHead(404); res.end('Not found') }
+        end = Math.min(end, stat.size - 1)
+        status = 206
+        headers = { 'Content-Range': `bytes ${start}-${end}/${stat.size}`, 'Accept-Ranges': 'bytes', 'Content-Length': end - start + 1, 'Content-Type': mime }
+      }
+
+      res.writeHead(status, headers)
+      const stream = fs.createReadStream(filePath, { start, end })
+      stream.on('error', () => res.destroy()) // read error mid-stream → tear down, don't crash
+      stream.pipe(res)
     })
     mediaServer.listen(0, '127.0.0.1', () => resolve(mediaServer.address().port))
   })
@@ -215,7 +225,59 @@ function loadShowFolder(folderPath) {
   const cuesPath = path.join(folderPath, 'cues.json')
   if (!fs.existsSync(cuesPath)) return { success: false, error: 'No cues.json found in folder' }
   const cues = JSON.parse(fs.readFileSync(cuesPath, 'utf8'))
-  return { success: true, cues, folderPath }
+  // Dev folder-loaded shows get a synthetic showId (prefixed to keep them
+  // visually distinct from bundled shows) so custom layouts persist for them too.
+  const showId = `folder-${slugify(cues.show?.title)}`
+  return { success: true, cues, folderPath, showId }
+}
+
+// ── Custom layout (Director's Custom Mode foundation) ────────────────────────
+// A per-show overlay stored SEPARATELY from the master cues cache, so the master
+// (cues-{showId}.json) is never mutated. Holds the scene order, sparse per-scene
+// overrides, uploaded/duplicated scenes, blackouts, and skip flags.
+function slugify(str) {
+  return String(str || 'show').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'show'
+}
+
+function customLayoutPath(showId) {
+  return path.join(CONFIG_DIR, `custom-layout-${showId}.json`)
+}
+
+function emptyLayout(showId) {
+  return { version: 1, showId, order: [], overrides: {}, customScenes: {}, blackouts: {} }
+}
+
+function getCustomLayout(showId) {
+  if (!showId) return null
+  ensureDirs()
+  const p = customLayoutPath(showId)
+  if (!fs.existsSync(p)) return null
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')) }
+  catch { return null } // a corrupted overlay must never crash the show
+}
+
+function saveCustomLayout(showId, layout) {
+  ensureDirs()
+  try {
+    const data = layout || emptyLayout(showId)
+    data.version = 1
+    data.showId = showId
+    fs.writeFileSync(customLayoutPath(showId), JSON.stringify(data, null, 2))
+    return { success: true }
+  } catch (e) { return { success: false, error: e.message } }
+}
+
+function resetCustomLayout(showId, mode) {
+  // Only 'full' touches disk: delete the overlay entirely. The master cues cache
+  // was never mutated, so deletion fully restores defaults AND removes any
+  // customer-added/duplicated scenes. 'position' is a renderer-only concern.
+  try {
+    if (mode === 'full') {
+      const p = customLayoutPath(showId)
+      if (fs.existsSync(p)) fs.unlinkSync(p)
+    }
+    return { success: true }
+  } catch (e) { return { success: false, error: e.message } }
 }
 
 function registerIPC() {
@@ -253,7 +315,37 @@ function registerIPC() {
       return { name: filename.replace(/\.[^.]+$/, ''), filename, path: dest }
     })
   })
+  ipcMain.handle('import-still', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'] }],
+      properties: ['openFile', 'multiSelections']
+    })
+    if (canceled) return []
+    return filePaths.map(p => {
+      const filename = path.basename(p)
+      const dest = path.join(VIDEOS_DIR, filename)
+      fs.copyFileSync(p, dest)
+      return { name: filename.replace(/\.[^.]+$/, ''), filename, path: dest }
+    })
+  })
   ipcMain.handle('open-url', (_, url) => shell.openExternal(url))
+  ipcMain.handle('export-cue-sheet', async (_, html) => {
+    try {
+      const { canceled, filePath } = await dialog.showSaveDialog({
+        defaultPath: 'SceneCaster-Cue-Sheet.pdf',
+        filters: [{ name: 'PDF', extensions: ['pdf'] }]
+      })
+      if (canceled || !filePath) return { success: false, canceled: true }
+      const win = new BrowserWindow({ show: false, webPreferences: { offscreen: false } })
+      await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+      const pdf = await win.webContents.printToPDF({ printBackground: true, pageSize: 'Letter' })
+      fs.writeFileSync(filePath, pdf)
+      win.destroy()
+      return { success: true, filePath }
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  })
   ipcMain.handle('get-video-data-url', (_, videoPath) => {
     const ext = path.extname(videoPath).slice(1).toLowerCase()
     const mimeMap = { mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska' }
@@ -261,37 +353,49 @@ function registerIPC() {
     const data = fs.readFileSync(videoPath)
     return `data:${mime};base64,${data.toString('base64')}`
   })
-  ipcMain.handle('save-backdrop-trigger', (_, { folderPath, actIndex, sceneIndex, trigger }) => {
-    const cuesPath = path.join(folderPath, 'cues.json')
-    const data = JSON.parse(fs.readFileSync(cuesPath, 'utf8'))
-    if (!data.acts[actIndex].scenes[sceneIndex].backdrop) {
-      data.acts[actIndex].scenes[sceneIndex].backdrop = {}
+  // Trigger/lighting edits now write into the custom-layout overlay keyed by the
+  // scene's STABLE id (master scene.id, or a custom scene's own id) — never by
+  // array position, and never mutating the master cues cache. This also fixes a
+  // pre-existing bug where these wrote to folderPath's cues.json, which for real
+  // bundled shows is ~/.scenecaster/videos (has no cues.json) → silent failure.
+  ipcMain.handle('save-backdrop-trigger', (_, { showId, sceneRef, trigger }) => {
+    if (!showId || !sceneRef) return { success: false, error: 'Missing showId or sceneRef' }
+    const layout = getCustomLayout(showId) || emptyLayout(showId)
+    if (sceneRef.kind === 'master') {
+      layout.overrides[sceneRef.sceneId] = layout.overrides[sceneRef.sceneId] || {}
+      layout.overrides[sceneRef.sceneId].backdrop = layout.overrides[sceneRef.sceneId].backdrop || {}
+      layout.overrides[sceneRef.sceneId].backdrop.trigger = trigger
+    } else if (sceneRef.kind === 'custom') {
+      const cs = layout.customScenes[sceneRef.id]
+      if (!cs) return { success: false, error: 'Custom scene not found' }
+      cs.backdrop = cs.backdrop || {}
+      cs.backdrop.trigger = trigger
+    } else {
+      return { success: false, error: 'Unsupported sceneRef kind' }
     }
-    data.acts[actIndex].scenes[sceneIndex].backdrop.trigger = trigger
-    fs.writeFileSync(cuesPath, JSON.stringify(data, null, 2))
-    return { success: true }
+    return saveCustomLayout(showId, layout)
   })
 
-  ipcMain.handle('save-lighting-cue', (_, { folderPath, actIndex, sceneIndex, cues: newCues, cueCode, trigger }) => {
-    const cuesPath = path.join(folderPath, 'cues.json')
-    const data = JSON.parse(fs.readFileSync(cuesPath, 'utf8'))
-    if (!data.acts[actIndex].scenes[sceneIndex].lighting) {
-      data.acts[actIndex].scenes[sceneIndex].lighting = {}
-    }
-    const lighting = data.acts[actIndex].scenes[sceneIndex].lighting
-    if (newCues !== undefined) {
-      // Multi-cue format: write cues array, remove legacy flat fields
-      lighting.cues = newCues
-      delete lighting.cue_code
-      delete lighting.trigger
+  ipcMain.handle('save-lighting-cue', (_, { showId, sceneRef, cues: newCues }) => {
+    if (!showId || !sceneRef) return { success: false, error: 'Missing showId or sceneRef' }
+    const layout = getCustomLayout(showId) || emptyLayout(showId)
+    if (sceneRef.kind === 'master') {
+      layout.overrides[sceneRef.sceneId] = layout.overrides[sceneRef.sceneId] || {}
+      layout.overrides[sceneRef.sceneId].lighting = { cues: newCues || [] }
+    } else if (sceneRef.kind === 'custom') {
+      const cs = layout.customScenes[sceneRef.id]
+      if (!cs) return { success: false, error: 'Custom scene not found' }
+      cs.lighting = { cues: newCues || [] }
     } else {
-      // Legacy single-cue format
-      lighting.cue_code = cueCode
-      lighting.trigger = trigger
+      return { success: false, error: 'Unsupported sceneRef kind' }
     }
-    fs.writeFileSync(cuesPath, JSON.stringify(data, null, 2))
-    return { success: true }
+    return saveCustomLayout(showId, layout)
   })
+
+  ipcMain.handle('get-custom-layout', (_, { showId }) => getCustomLayout(showId))
+  ipcMain.handle('save-custom-layout', (_, { showId, layout }) => saveCustomLayout(showId, layout))
+  ipcMain.handle('reset-custom-layout', (_, { showId, mode }) => resetCustomLayout(showId, mode))
+
   ipcMain.handle('start-media-server', (_, folderPath) => startMediaServer(folderPath))
 
   const COLOR_SETTINGS_FILE = path.join(CONFIG_DIR, 'color-settings.json')
@@ -401,7 +505,7 @@ function registerIPC() {
       if (res.ok) {
         const text = await res.text()
         fs.writeFileSync(cachePath, text)
-        return { success: true, cues: JSON.parse(text), folderPath: VIDEOS_DIR }
+        return { success: true, cues: JSON.parse(text), folderPath: VIDEOS_DIR, showId }
       }
     } catch (e) {
       console.log('Could not fetch cues from server, falling back to cache:', e.message)
@@ -411,7 +515,7 @@ function registerIPC() {
     if (fs.existsSync(cachePath)) {
       try {
         const cues = JSON.parse(fs.readFileSync(cachePath, 'utf8'))
-        return { success: true, cues, folderPath: VIDEOS_DIR }
+        return { success: true, cues, folderPath: VIDEOS_DIR, showId }
       } catch (e) {
         return { success: false, error: 'Cached show data is corrupted.' }
       }
@@ -454,10 +558,15 @@ function buildMenu() {
     {
       label: 'Edit',
       submenu: [
-        { role: 'undo' }, { role: 'redo' },
+        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('menu-undo') } },
+        { label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z', click: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('menu-redo') } },
         { type: 'separator' },
         { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }
       ]
+    },
+    {
+      label: 'View',
+      submenu: [{ role: 'toggleDevTools' }, { role: 'reload' }]
     },
     {
       label: 'Window',
@@ -510,8 +619,16 @@ function createLedWindow() {
 }
 
 function createWindows() {
+  const { screen } = require('electron')
+  const primaryDisplay = screen.getPrimaryDisplay()
+  // Open the operator window centered on the MAIN display, so it never lands on a
+  // secondary or failing screen where you can't reach it.
+  const wa = primaryDisplay.workArea
+  const winW = Math.min(1600, wa.width), winH = Math.min(1000, wa.height)
   mainWindow = new BrowserWindow({
-    width: 1600, height: 1000, minWidth: 900, minHeight: 600,
+    x: wa.x + Math.round((wa.width - winW) / 2),
+    y: wa.y + Math.round((wa.height - winH) / 2),
+    width: winW, height: winH, minWidth: 900, minHeight: 600,
     backgroundColor: '#FFFFFF',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     fullscreenable: false,
@@ -519,18 +636,22 @@ function createWindows() {
   })
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'))
 
-  // Auto-open LED window if external display is already connected at launch
-  const { screen } = require('electron')
-  const primaryDisplay = screen.getPrimaryDisplay()
-  if (screen.getAllDisplays().find(d => d.id !== primaryDisplay.id)) {
-    createLedWindow()
+  // Auto-open the fullscreen LED output window ONLY in the packaged (customer)
+  // app. In dev (npm start) skip it: a frameless, always-on-top, fullscreen
+  // window on a secondary/misconfigured display can cover everything and trap
+  // the mouse/keyboard. Use the "Open External Screen" button to open it manually
+  // during dev when you actually want to test projector output.
+  if (app.isPackaged) {
+    // Auto-open LED window if external display is already connected at launch
+    if (screen.getAllDisplays().find(d => d.id !== primaryDisplay.id)) {
+      createLedWindow()
+    }
+    // Auto-open LED window whenever a display is plugged in
+    screen.on('display-added', () => {
+      if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
+      setTimeout(() => createLedWindow(), 500) // small delay lets OS register the display
+    })
   }
-
-  // Auto-open LED window whenever a display is plugged in
-  screen.on('display-added', () => {
-    if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
-    setTimeout(() => createLedWindow(), 500) // small delay lets OS register the display
-  })
 
   // Heartbeat — keeps video alive when macOS suspends renderer processes
   setInterval(() => {
