@@ -12,6 +12,7 @@
   "build": {
     "appId": "com.ellusion.scenecaster",
     "productName": "SceneCaster",
+    "afterSign": "scripts/notarize.js",
     "directories": {
       "output": "dist"
     },

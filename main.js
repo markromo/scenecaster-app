@@ -491,10 +491,31 @@ function registerIPC() {
       // Full show pack: use directly; normalize legacy 'shrek-full' → 'shrek-adult'
       showId = fullPack.endsWith('-full') ? 'shrek-adult' : fullPack
     } else {
-      // À la carte scene filename (e.g. "Frozen_Ice_Palace", "Shrek_Open.JR")
+      // À la carte scene filename (e.g. "Frozen_Ice_Palace", "Shrek_Open.JR",
+      // "Birthday_Party"). Look up which show pack actually contains this
+      // scene rather than guessing from the filename prefix — that guess
+      // only works when the scene name starts with the show name (true for
+      // Shrek, not true for most Frozen/Matilda scenes).
       const isJr = ids.some(id => id.endsWith('.JR') || id.endsWith('_JR'))
-      const prefix = ids[0].split('_')[0].toLowerCase()
-      showId = `${prefix}-${isJr ? 'jr' : 'adult'}`
+      try {
+        const manifestResp = await fetch(MANIFEST_URL)
+        if (manifestResp.ok) {
+          const manifest = await manifestResp.json()
+          const packs = Object.entries(manifest.packs || {})
+          const preferredSuffix = isJr ? '-jr' : '-adult'
+          const match =
+            packs.find(([id, members]) => id.endsWith(preferredSuffix) && ids.some(sceneId => members.includes(sceneId))) ||
+            packs.find(([, members]) => ids.some(sceneId => members.includes(sceneId)))
+          if (match) showId = match[0]
+        }
+      } catch (e) {
+        console.log('Could not resolve show from manifest, falling back to filename guess:', e.message)
+      }
+      if (!showId) {
+        // Last-resort fallback if the manifest lookup failed (e.g. offline)
+        const prefix = ids[0].split('_')[0].toLowerCase()
+        showId = `${prefix}-${isJr ? 'jr' : 'adult'}`
+      }
     }
 
     const cachePath = path.join(CONFIG_DIR, `cues-${showId}.json`)

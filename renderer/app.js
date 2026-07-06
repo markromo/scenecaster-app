@@ -639,6 +639,34 @@ let _dragFrom = null
 function setDragOver(item) { clearDragOver(); item.classList.add('drag-over') }
 function clearDragOver() { el.sceneList.querySelectorAll('.scene-item.drag-over').forEach(n => n.classList.remove('drag-over')) }
 
+// Auto-scroll the scene list while dragging a row near its top/bottom edge.
+const AUTOSCROLL_EDGE = 40 // px from the edge that starts scrolling
+const AUTOSCROLL_MAX_SPEED = 12 // px per animation frame at the very edge
+let _dragMouseY = null
+let _autoScrollRAF = null
+function autoScrollTick() {
+  if (_dragMouseY != null) {
+    const rect = el.sceneList.getBoundingClientRect()
+    const distTop = _dragMouseY - rect.top
+    const distBottom = rect.bottom - _dragMouseY
+    if (distTop >= 0 && distTop < AUTOSCROLL_EDGE) {
+      el.sceneList.scrollTop -= AUTOSCROLL_MAX_SPEED * (1 - distTop / AUTOSCROLL_EDGE)
+    } else if (distBottom >= 0 && distBottom < AUTOSCROLL_EDGE) {
+      el.sceneList.scrollTop += AUTOSCROLL_MAX_SPEED * (1 - distBottom / AUTOSCROLL_EDGE)
+    }
+  }
+  _autoScrollRAF = requestAnimationFrame(autoScrollTick)
+}
+el.sceneList.addEventListener('dragstart', () => {
+  _dragMouseY = null
+  if (_autoScrollRAF == null) _autoScrollRAF = requestAnimationFrame(autoScrollTick)
+})
+el.sceneList.addEventListener('dragover', e => { _dragMouseY = e.clientY })
+el.sceneList.addEventListener('dragend', () => {
+  _dragMouseY = null
+  if (_autoScrollRAF != null) { cancelAnimationFrame(_autoScrollRAF); _autoScrollRAF = null }
+})
+
 let _sceneMenuEl = null
 function closeSceneMenu() {
   if (_sceneMenuEl) { _sceneMenuEl.remove(); _sceneMenuEl = null; document.removeEventListener('click', closeSceneMenu) }
@@ -1483,7 +1511,7 @@ function isEditLocked() {
 }
 
 function updateEditModeLockBtn(locked) {
-  el.btnEditModeLock.textContent = locked ? '🔒 Show Mode' : '🔓 Edit Mode'
+  el.btnEditModeLock.textContent = locked ? 'Show Mode' : 'Edit Mode'
   if (locked) {
     el.btnEditModeLock.style.background = 'var(--orange)'
     el.btnEditModeLock.style.color = '#fff'
