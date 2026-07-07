@@ -41,8 +41,6 @@ const el = {
   sceneList: document.getElementById('scene-list'), backdropScene: document.getElementById('backdrop-scene'),
   backdropTrigger: document.getElementById('backdrop-trigger'),
   lightingCueList: document.getElementById('lighting-cue-list'),
-  nextBackdrop: document.getElementById('next-backdrop'),
-  nextBackdropTrigger: document.getElementById('next-backdrop-trigger'), nextLighting: document.getElementById('next-lighting'),
   btnB: document.getElementById('btn-b'),
   btnL: document.getElementById('btn-l'), btnLBack: document.getElementById('btn-l-back'),
   btnBlack: document.getElementById('btn-black'),
@@ -56,7 +54,6 @@ const el = {
   btnInsertBlackout: document.getElementById('btn-insert-blackout'),
   btnUploadScene: document.getElementById('btn-upload-scene'),
   btnUploadStill: document.getElementById('btn-upload-still'),
-  btnRestartRun: document.getElementById('btn-restart-run'),
   btnCueSheet: document.getElementById('btn-cue-sheet'),
   colorPanel: document.getElementById('color-panel'),
   ccBrightness: document.getElementById('cc-brightness'),
@@ -1086,22 +1083,10 @@ function updateCenterPanel() {
   el.btnLBack.disabled = state.lightingSubIndex <= 0
 }
 
-function updateNextPanel() {
-  const nextB = state.allScenes[state.backdropIndex + 1]
-  el.nextBackdrop.textContent = nextB ? nextB.name : 'End of show'
-  el.nextBackdropTrigger.innerHTML = nextB?.backdrop_trigger || ''
-
-  const ls = state.allScenes[state.lightingIndex]
-  const cues = ls?.lighting_cues || []
-  if (state.lightingSubIndex < cues.length - 1) {
-    const nextCue = cues[state.lightingSubIndex + 1]
-    el.nextLighting.textContent = nextCue?.cue_code || '(no cue)'
-  } else {
-    const nextScene = state.allScenes[state.lightingIndex + 1]
-    const nextCues = nextScene?.lighting_cues || []
-    el.nextLighting.textContent = nextCues[0]?.cue_code || (nextScene ? '(no cue)' : 'End of show')
-  }
-}
+// "Next Up" panel was removed (backdrop/lighting/scene lookahead is already
+// visible in the scene queue) — kept as a no-op since many call sites still
+// call it after state changes.
+function updateNextPanel() {}
 
 // ── Controls ────────────────────────────────────────────────────────────────────
 
@@ -1529,15 +1514,19 @@ function isEditLocked() {
 }
 
 function updateEditModeLockBtn(locked) {
-  el.btnEditModeLock.textContent = locked ? 'Show Mode' : 'Edit Mode'
+  // Label always names the CURRENT state (not the action a click performs), and
+  // both states get their own color — a plain/neutral button reads as "off" by
+  // convention, which made the unlocked state look inactive even though it's
+  // the one that's actually live.
+  el.btnEditModeLock.textContent = locked ? 'Locked' : 'Unlocked'
   if (locked) {
     el.btnEditModeLock.style.background = 'var(--orange)'
     el.btnEditModeLock.style.color = '#fff'
     el.btnEditModeLock.style.borderColor = 'transparent'
   } else {
-    el.btnEditModeLock.style.background = ''
-    el.btnEditModeLock.style.color = ''
-    el.btnEditModeLock.style.borderColor = ''
+    el.btnEditModeLock.style.background = 'var(--blue)'
+    el.btnEditModeLock.style.color = '#fff'
+    el.btnEditModeLock.style.borderColor = 'transparent'
   }
   // Structural actions are only available in Edit Mode (unlocked).
   syncEditModeGates()
@@ -1565,19 +1554,6 @@ el.btnEditModeLock.addEventListener('click', () => {
 el.btnInsertBlackout.addEventListener('click', insertBlackout)
 el.btnUploadScene.addEventListener('click', uploadScene)
 el.btnUploadStill.addEventListener('click', uploadStill)
-
-// Reset playback position only (NOT a customization change) — restart the run
-// from the top: clear played dimming, reset cue pointers, black the wall. Safe
-// to use mid-show, so it is not gated by Edit Mode.
-function resetPlaybackPosition() {
-  state.backdropIndex = -1; state.lightingIndex = -1; state.lightingSubIndex = 0
-  state.playedScenes = new Set()
-  const cmd = { type: 'black', dissolve: 0 }
-  window.showrunner.sendToLed(cmd); previewCommand(cmd)
-  renderSceneList(); updateCenterPanel(); updateNextPanel()
-  el.sceneList.scrollTop = 0  // queue is ready to run — first scene visible and one click away
-}
-el.btnRestartRun.addEventListener('click', resetPlaybackPosition)
 
 // ── Printable PDF cue sheet ──────────────────────────────────────────────────
 // Reflects the CUSTOMIZED running order: sequential numbers (skipped rows struck
