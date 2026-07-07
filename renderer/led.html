@@ -31,6 +31,7 @@ const vidB  = document.getElementById('vid-b')
 const imgA  = document.getElementById('img-a')
 const imgB  = document.getElementById('img-b')
 let active  = 'a'
+let hasStartedOnce = false  // true once the show's first video has actually begun playing
 
 function getActive()   { return active === 'a' ? { wrap: wrapA, vid: vidA, img: imgA } : { wrap: wrapB, vid: vidB, img: imgB } }
 function getInactive() { return active === 'a' ? { wrap: wrapB, vid: vidB, img: imgB } : { wrap: wrapA, vid: vidA, img: imgA } }
@@ -78,6 +79,7 @@ function crossfadeTo(src, dissolve, looping, colorSettings) {
   inVid.loop = false
 
   function startFade() {
+    hasStartedOnce = true
     inVid.play().catch(e => console.warn('play error:', e))
     active = active === 'a' ? 'b' : 'a'
     // Wait for first real decoded frame before switching — prevents black flash
@@ -101,11 +103,14 @@ function crossfadeTo(src, dissolve, looping, colorSettings) {
     inVid.ontimeupdate = doSwitch
   }
 
-  if (outVid.readyState === 0) {
+  if (!hasStartedOnce) {
     // First play — outVid is idle. Load the same src into it and wait until
     // BOTH videos are ready/playing before starting the fade. Two simultaneous
     // H.264 streams compete for the hardware overlay slot, which forces both
     // through CSS compositing so opacity works correctly on the very first cue.
+    // NOTE: this must key off hasStartedOnce, not outVid.readyState — stills call
+    // setStillMode(), which clears a video's src and resets its readyState to 0,
+    // so readyState alone can't tell "never played" apart from "was just a still."
     let inReady = false, outPlaying = false
     const tryStart = () => { if (inReady && outPlaying) startFade() }
 
