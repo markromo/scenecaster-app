@@ -37,7 +37,7 @@ function getInactive() { return active === 'a' ? { wrap: wrapB, vid: vidB, img: 
 
 // A wrap can hold either a looping video or a held still. Flip between them.
 function setVideoMode(w) { const v = w.querySelector('video'), i = w.querySelector('img'); i.style.display = 'none'; i.removeAttribute('src'); v.style.display = '' }
-function setStillMode(w) { const v = w.querySelector('video'), i = w.querySelector('img'); v.pause(); v.ontimeupdate = null; v.removeAttribute('src'); v.style.display = 'none'; i.style.display = '' }
+function setStillMode(w) { const v = w.querySelector('video'), i = w.querySelector('img'); v.pause(); v.ontimeupdate = null; v.removeAttribute('src'); v.style.display = 'none'; i.style.display = 'block' }
 
 function fadeWrap(el, toOpacity, durationSec) {
   if (el._fadeTimer) { clearInterval(el._fadeTimer); el._fadeTimer = null }
