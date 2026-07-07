@@ -193,7 +193,7 @@ async function finalizeLicense({ token, closingDate }) {
     const machineId = getMachineId()
     ensureDirs()
     fs.writeFileSync(LICENSE_FILE, JSON.stringify({ token: data.token, machineId, activatedAt: new Date().toISOString() }))
-    return { success: true, payload }
+    return { success: true, payload, capped: data.capped, expiryDate: data.expiryDate }
   } catch (e) {
     return { success: false, error: 'Could not reach activation server. Check your internet connection.' }
   }

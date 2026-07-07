@@ -48,6 +48,12 @@
       <div id="date-error" class="error-msg hidden"></div>
       <button class="btn-primary" id="btn-set-date">Confirm &amp; Activate &#8594;</button>
     </div>
+    <!-- Step 3: Shown only if the requested closing date exceeded the 12-month license limit -->
+    <div id="step-capped-notice" class="hidden">
+      <h2>Closing date adjusted</h2>
+      <p class="muted">Licenses are valid for up to 12 months from purchase. Your license will expire on <strong id="capped-expiry-date"></strong> instead of the date you entered.</p>
+      <button class="btn-primary" id="btn-capped-continue">Continue &#8594;</button>
+    </div>
   </div>
 </div>
 

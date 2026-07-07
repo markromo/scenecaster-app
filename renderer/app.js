@@ -33,6 +33,9 @@ const el = {
   stepKey: document.getElementById('step-key'), stepDate: document.getElementById('step-date'),
   inputClosingDate: document.getElementById('input-closing-date'),
   btnSetDate: document.getElementById('btn-set-date'), dateError: document.getElementById('date-error'),
+  stepCappedNotice: document.getElementById('step-capped-notice'),
+  cappedExpiryDate: document.getElementById('capped-expiry-date'),
+  btnCappedContinue: document.getElementById('btn-capped-continue'),
   topbarShow: document.getElementById('topbar-show'),
   daysBadge: document.getElementById('days-badge'),
   sceneList: document.getElementById('scene-list'), backdropScene: document.getElementById('backdrop-scene'),
@@ -241,6 +244,8 @@ function showDatePickerStep() {
   el.inputClosingDate.focus()
 }
 
+let _pendingActivationPayload = null  // holds payload while the capped-date notice is shown
+
 el.btnSetDate.addEventListener('click', async () => {
   const closingDate = el.inputClosingDate.value
   if (!closingDate) { showDateError('Please select your last show date.'); return }
@@ -249,11 +254,24 @@ el.btnSetDate.addEventListener('click', async () => {
   el.btnSetDate.textContent = 'Confirm & Activate →'; el.btnSetDate.disabled = false
   if (!result.success) { showDateError(result.error || 'Activation failed. Please try again.'); return }
   _pendingToken = null
+  if (result.capped) {
+    _pendingActivationPayload = result.payload
+    el.cappedExpiryDate.textContent = result.expiryDate
+    el.stepDate.classList.add('hidden')
+    el.stepCappedNotice.classList.remove('hidden')
+    return
+  }
   checkAndDownload(result.payload, null)
 })
 
 el.inputClosingDate.addEventListener('keydown', e => { if (e.key === 'Enter') el.btnSetDate.click() })
 function showDateError(msg) { el.dateError.textContent = msg; el.dateError.classList.remove('hidden') }
+
+el.btnCappedContinue.addEventListener('click', () => {
+  const payload = _pendingActivationPayload
+  _pendingActivationPayload = null
+  checkAndDownload(payload, null)
+})
 
 // ── Player start (dev mode / fallback) ─────────────────────────────────────────
 function startPlayer(payload, daysRemaining) {
