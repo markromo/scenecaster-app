@@ -812,15 +812,19 @@ async function persistSceneDissolveOverride(scene, v) {
   layout.order = orderFromScenes()
   await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
 }
-// Pin this scene's dissolve to whatever the global slider currently reads.
-async function pinSceneDissolve(flatIndex) {
-  if (isEditLocked() || !state.showId) return
+// Live-set this scene's dissolve override as its own popover slider is dragged —
+// same debounced-save convention as the Color Correction sliders (updates in
+// memory immediately, persists to disk shortly after dragging stops).
+let _dissolveSaveTimer = null
+function setSceneDissolveLive(flatIndex, v) {
   const scene = state.allScenes[flatIndex]
   if (!scene) return
-  await pushUndo()
-  scene.dissolveOverride = state.dissolveTime
-  await persistSceneDissolveOverride(scene, state.dissolveTime)
-  renderSceneList()
+  scene.dissolveOverride = v
+  if (_dissolveSaveTimer) clearTimeout(_dissolveSaveTimer)
+  _dissolveSaveTimer = setTimeout(() => {
+    persistSceneDissolveOverride(scene, v)
+    _dissolveSaveTimer = null
+  }, 500)
 }
 async function clearSceneDissolve(flatIndex) {
   if (isEditLocked() || !state.showId) return
@@ -1002,34 +1006,47 @@ function closeDissolveConnector() {
   if (!_dissolveConnectorEl) return
   _dissolveConnectorEl.remove(); _dissolveConnectorEl = null
   document.removeEventListener('click', closeDissolveConnector)
-  // The slider was temporarily previewing a scene's value — restore the real default.
-  el.dissolveSlider.value = state.dissolveTime
-  el.dissolveLabel.textContent = `${state.dissolveTime.toFixed(1)}s`
 }
+// Each connector gets its own independent slider — the global slider at the
+// bottom of the app is untouched by this and always shows only itself.
 function openDissolveConnector(flatIndex, anchor) {
   closeSceneMenu()
   closeDissolveConnector()
   const scene = state.allScenes[flatIndex]
   if (!scene || isEditLocked()) return
 
-  // Preview this scene's effective dissolve on the slider while the popover is
-  // open (restored to the true global value on close, in closeDissolveConnector).
   const effective = scene.dissolveOverride != null ? scene.dissolveOverride : state.dissolveTime
-  el.dissolveSlider.value = effective
-  el.dissolveLabel.textContent = `${effective.toFixed(1)}s`
-
-  const items = [[`Set to ${state.dissolveTime.toFixed(1)}s`, () => pinSceneDissolve(flatIndex)]]
-  if (scene.dissolveOverride != null) items.push(['Reset to global', () => clearSceneDissolve(flatIndex)])
 
   const menu = document.createElement('div')
-  menu.className = 'scene-menu'
-  items.forEach(([label, fn]) => {
-    const b = document.createElement('button')
-    b.className = 'scene-menu-item'
-    b.textContent = label
-    b.addEventListener('click', e => { e.stopPropagation(); closeDissolveConnector(); fn() })
-    menu.appendChild(b)
+  menu.className = 'scene-menu dissolve-popover'
+
+  const row = document.createElement('div')
+  row.className = 'dissolve-popover-row'
+  const slider = document.createElement('input')
+  slider.type = 'range'; slider.min = '0.1'; slider.max = '3'; slider.step = '0.1'; slider.value = String(effective)
+  const valueLabel = document.createElement('span')
+  valueLabel.className = 'dissolve-popover-value'
+  valueLabel.textContent = `${parseFloat(effective).toFixed(1)}s`
+  slider.addEventListener('input', () => {
+    const v = parseFloat(slider.value)
+    valueLabel.textContent = `${v.toFixed(1)}s`
+    anchor.textContent = `${v}s`
+    setSceneDissolveLive(flatIndex, v)
+    if (!resetBtn) addResetButton()
   })
+  row.appendChild(slider); row.appendChild(valueLabel)
+  menu.appendChild(row)
+
+  let resetBtn = null
+  function addResetButton() {
+    resetBtn = document.createElement('button')
+    resetBtn.className = 'scene-menu-item'
+    resetBtn.textContent = 'Reset to global'
+    resetBtn.addEventListener('click', e => { e.stopPropagation(); closeDissolveConnector(); clearSceneDissolve(flatIndex) })
+    menu.appendChild(resetBtn)
+  }
+  if (scene.dissolveOverride != null) addResetButton()
+
   document.body.appendChild(menu)
   const r = anchor.getBoundingClientRect()
   menu.style.top = `${Math.round(r.bottom + 4)}px`

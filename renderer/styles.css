@@ -77,6 +77,10 @@ kbd{display:inline-block;min-width:14px;padding:2px 7px;font:600 12px ui-monospa
 .dissolve-connector{padding:3px 14px;font-size:10px;font-weight:600;letter-spacing:.3px;color:var(--faint);background:var(--bg-hover);text-align:center}
 .dissolve-connector.editable{cursor:pointer}
 .dissolve-connector.editable:hover{color:var(--orange);background:var(--orange-glow)}
+.dissolve-popover{min-width:180px;padding:10px}
+.dissolve-popover-row{display:flex;align-items:center;gap:8px;padding:2px 6px 8px}
+.dissolve-popover-row input[type=range]{flex:1}
+.dissolve-popover-value{font-size:12px;font-weight:600;color:var(--text);min-width:32px;text-align:right;font-variant-numeric:tabular-nums}
 .scene-item .scene-trigger{font-size:11px;color:var(--muted);font-style:italic;margin-top:2px;line-height:1.35;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .scene-item .scene-trigger strong{font-weight:700;font-style:inherit}
 .scene-item .scene-trigger em{font-style:italic}
