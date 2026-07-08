@@ -678,10 +678,28 @@ el.sceneList.addEventListener('dragstart', () => {
   _dragMouseY = null
   if (_autoScrollRAF == null) _autoScrollRAF = requestAnimationFrame(autoScrollTick)
 })
-el.sceneList.addEventListener('dragover', e => { _dragMouseY = e.clientY })
+// preventDefault here (not just on individual rows) is required — otherwise the
+// browser silently refuses to drop on anything that isn't a row itself, which
+// now includes the dissolve connectors and act dividers sitting between rows.
+el.sceneList.addEventListener('dragover', e => { e.preventDefault(); _dragMouseY = e.clientY })
 el.sceneList.addEventListener('dragend', () => {
   _dragMouseY = null
   if (_autoScrollRAF != null) { cancelAnimationFrame(_autoScrollRAF); _autoScrollRAF = null }
+})
+// Fallback for drops that land on a connector, divider, or empty space rather
+// than directly on a row (rows handle — and stopPropagation — their own drops).
+el.sceneList.addEventListener('drop', e => {
+  e.preventDefault()
+  const from = _dragFrom; _dragFrom = null; clearDragOver()
+  if (from == null) return
+  const rows = [...el.sceneList.querySelectorAll('.scene-item')]
+  let target = state.allScenes.length
+  for (const row of rows) {
+    const rect = row.getBoundingClientRect()
+    if (e.clientY <= rect.top + rect.height / 2) { target = Number(row.dataset.flatIndex); break }
+    if (e.clientY <= rect.bottom) { target = Number(row.dataset.flatIndex) + 1; break }
+  }
+  moveSceneTo(from, target)
 })
 
 let _sceneMenuEl = null
@@ -949,6 +967,7 @@ function renderSceneList() {
     if (state.hideSkipped && scene.skip) return  // row hidden — flatIndex bookkeeping is unaffected
     const item = document.createElement('div')
     item.className = `scene-item${flatIndex === state.backdropIndex ? ' active' : ''}${scene.skip ? ' skipped' : ''}`
+    item.dataset.flatIndex = String(flatIndex)  // read by the list-level drop fallback below
     const triggerSnippet = scene.backdrop_trigger
       ? `<div class="scene-trigger">${scene.backdrop_trigger}</div>` : ''
     // mti_page already includes its own "p." (single page) or "pp." (range)
@@ -964,6 +983,7 @@ function renderSceneList() {
       item.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOver(item) })
       item.addEventListener('drop', e => {
         e.preventDefault()
+        e.stopPropagation()  // handled here — don't let the list-level fallback also fire
         const from = _dragFrom; _dragFrom = null; clearDragOver()
         if (from == null) return
         // Dropping on a row's bottom half means "insert after this row" — without
