@@ -1020,6 +1020,11 @@ function openDissolveConnector(flatIndex, anchor) {
   const menu = document.createElement('div')
   menu.className = 'scene-menu dissolve-popover'
 
+  const label = document.createElement('div')
+  label.className = 'dissolve-popover-label'
+  label.textContent = 'Scene Dissolve'
+  menu.appendChild(label)
+
   const row = document.createElement('div')
   row.className = 'dissolve-popover-row'
   const slider = document.createElement('input')

@@ -78,6 +78,7 @@ kbd{display:inline-block;min-width:14px;padding:2px 7px;font:600 12px ui-monospa
 .dissolve-connector.editable{cursor:pointer}
 .dissolve-connector.editable:hover{color:var(--orange);background:var(--orange-glow)}
 .dissolve-popover{min-width:180px;padding:10px}
+.dissolve-popover-label{font-size:11px;font-weight:600;letter-spacing:.3px;color:var(--muted);padding:2px 6px 6px}
 .dissolve-popover-row{display:flex;align-items:center;gap:8px;padding:2px 6px 8px}
 .dissolve-popover-row input[type=range]{flex:1}
 .dissolve-popover-value{font-size:12px;font-weight:600;color:var(--text);min-width:32px;text-align:right;font-variant-numeric:tabular-nums}
