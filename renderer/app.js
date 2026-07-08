@@ -697,7 +697,9 @@ function openSceneMenu(flatIndex, anchor) {
   if (kind === 'master' || kind === 'custom') items.push([scene.skip ? 'Unskip' : 'Skip', () => toggleSkip(flatIndex)])
   if (kind === 'custom') items.push(['Rename', () => renameScene(flatIndex)])
   items.push(['Duplicate', () => duplicateScene(flatIndex)])
-  items.push(['Delete', () => deleteScene(flatIndex)])
+  // Our own scenes can only be skipped, never deleted — Delete is for content
+  // the customer added themselves (uploads, duplicates, blackouts).
+  if (kind !== 'master') items.push(['Delete', () => deleteScene(flatIndex)])
 
   const menu = document.createElement('div')
   menu.className = 'scene-menu'
@@ -896,6 +898,7 @@ async function deleteScene(flatIndex) {
   if (isEditLocked() || !state.showId) return
   const s = state.allScenes[flatIndex]
   if (!s) return
+  if (s.sceneRef.kind === 'master') return  // our own scenes can only be skipped, never deleted
   if (s.sceneRef.kind === 'custom') {
     if (!window.confirm(`Delete "${s.name}"?\n\nThis added/duplicated scene will be removed for good. (Your original show is unaffected — use Reset to Original to restore our scenes.)`)) return
   }
@@ -944,7 +947,9 @@ function renderSceneList() {
     item.className = `scene-item${flatIndex === state.backdropIndex ? ' active' : ''}${scene.skip ? ' skipped' : ''}`
     const triggerSnippet = scene.backdrop_trigger
       ? `<div class="scene-trigger">${scene.backdrop_trigger}</div>` : ''
-    const pageSnippet = scene.mti_page ? `<div class="scene-page">p.${scene.mti_page}</div>` : ''
+    // mti_page already includes its own "p." (single page) or "pp." (range)
+    // prefix from the source cue data — don't add another one on top of it.
+    const pageSnippet = scene.mti_page && scene.mti_page !== 'N/A' ? `<div class="scene-page">${escHtml(scene.mti_page)}</div>` : ''
     item.innerHTML = `<div class="scene-name">${escHtml(scene.name)}</div>${triggerSnippet}${pageSnippet}`
     item.addEventListener('click', () => jumpToScene(flatIndex))
     // In Edit Mode: rows are draggable to reorder, and expose a single ⋯ menu.
@@ -953,7 +958,18 @@ function renderSceneList() {
       item.addEventListener('dragstart', e => { _dragFrom = flatIndex; item.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move' })
       item.addEventListener('dragend', () => { item.classList.remove('dragging'); clearDragOver() })
       item.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOver(item) })
-      item.addEventListener('drop', e => { e.preventDefault(); const from = _dragFrom; _dragFrom = null; clearDragOver(); if (from != null) moveSceneTo(from, flatIndex) })
+      item.addEventListener('drop', e => {
+        e.preventDefault()
+        const from = _dragFrom; _dragFrom = null; clearDragOver()
+        if (from == null) return
+        // Dropping on a row's bottom half means "insert after this row" — without
+        // this, there was no way to drop something as the new LAST item, since
+        // dropping directly on a row always inserted before it, and no row exists
+        // below the last one to drop onto instead.
+        const rect = item.getBoundingClientRect()
+        const dropAfter = e.clientY > rect.top + rect.height / 2
+        moveSceneTo(from, dropAfter ? flatIndex + 1 : flatIndex)
+      })
 
       const menuBtn = document.createElement('button')
       menuBtn.className = 'scene-menu-btn'
@@ -1262,6 +1278,11 @@ function startTriggerEdit() {
   const currentHtml = scene.backdrop_trigger || ''
   el.backdropTrigger.innerHTML = currentHtml || ''
   el.backdropTrigger.contentEditable = 'true'
+  // Defensive: on some systems a window's first click after regaining OS focus
+  // doesn't hand keyboard focus to the clicked element even though .focus() is
+  // called — forcing window-level focus first makes the element-level focus
+  // below more reliable.
+  window.focus()
   el.backdropTrigger.focus()
   el.btnTriggerEdit.textContent = '✓ Save'
 
