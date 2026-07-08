@@ -99,7 +99,10 @@
 
     <!-- LEFT — Scene list -->
     <aside class="scene-list-panel">
-      <div class="panel-header">Scene List</div>
+      <div class="panel-header panel-header-row">
+        <span>Scene List</span>
+        <button id="btn-hide-skipped" class="hide-skipped-toggle" title="Hide skipped scenes from this list">Hide Skipped</button>
+      </div>
       <div id="scene-list" class="scene-list"></div>
     </aside>
 
@@ -146,8 +149,18 @@
 
     <!-- RIGHT — Utility panel -->
     <aside class="next-panel">
-      <div id="color-panel" class="color-panel hidden">
-        <div class="cc-panel-title">Color Correction<button id="cc-close" class="cc-close-btn" title="Close">✕</button></div>
+      <div class="utility-buttons">
+        <button id="btn-edit-mode-lock" class="key-btn key-neutral utility-btn" title="Click to lock structural edits during a live show">Unlocked</button>
+        <button id="btn-upload-scene" class="key-btn key-neutral utility-btn" title="Add your own video as a new scene">Upload Video</button>
+        <button id="btn-upload-still" class="key-btn key-neutral utility-btn" title="Add your own still image (holds until you press B)">Upload Still</button>
+        <button id="btn-insert-blackout" class="key-btn key-neutral utility-btn" title="Insert a blackout after the current scene">+ Blackout</button>
+        <button id="btn-cue-sheet" class="key-btn key-neutral utility-btn" title="Export a printable PDF cue sheet of your customized show">Cue Sheet (PDF)</button>
+        <button id="btn-open-led" class="key-btn key-orange utility-btn" onclick="window.showrunner.openLedWindow()">Open External Screen</button>
+        <button id="btn-rear-projection" class="key-btn key-neutral utility-btn">Rear Projection</button>
+        <button id="btn-reset-show" class="key-btn key-neutral utility-btn utility-btn-danger" title="Discard all customizations and restore the original show">Reset to Original</button>
+      </div>
+      <div id="color-panel" class="color-panel">
+        <div class="cc-panel-title">Color Correction</div>
         <div class="cc-row">
           <span class="cc-label">Brightness</span>
           <input type="range" id="cc-brightness" min="0" max="200" step="1" value="100"/>
@@ -169,16 +182,6 @@
           <span class="cc-val" id="cc-saturation-val">100</span>
         </div>
         <button id="cc-reset" class="cc-reset-btn">Reset to Defaults</button>
-      </div>
-      <div class="utility-buttons">
-        <button id="btn-edit-mode-lock" class="key-btn key-neutral utility-btn" title="Click to lock structural edits during a live show">Unlocked</button>
-        <button id="btn-upload-scene" class="key-btn key-neutral utility-btn" title="Add your own video as a new scene">Upload Video</button>
-        <button id="btn-upload-still" class="key-btn key-neutral utility-btn" title="Add your own still image (holds until you press B)">Upload Still</button>
-        <button id="btn-insert-blackout" class="key-btn key-neutral utility-btn" title="Insert a blackout after the current scene">+ Blackout</button>
-        <button id="btn-cue-sheet" class="key-btn key-neutral utility-btn" title="Export a printable PDF cue sheet of your customized show">Cue Sheet (PDF)</button>
-        <button id="btn-open-led" class="key-btn key-orange utility-btn" onclick="window.showrunner.openLedWindow()">Open External Screen</button>
-        <button id="btn-rear-projection" class="key-btn key-neutral utility-btn">Rear Projection</button>
-        <button id="btn-reset-show" class="key-btn key-neutral utility-btn utility-btn-danger" title="Discard all customizations and restore the original show">Reset to Original</button>
       </div>
     </aside>
 

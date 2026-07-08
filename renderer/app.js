@@ -14,6 +14,7 @@ const state = {
   dissolveTime: 1.0,
   allScenes: [],
   colorSettings: {}, // keyed by per-scene instanceId (legacy: video filename), holds color correction
+  hideSkipped: false, // display-only filter — never persisted, resets each launch
 }
 
 // DOM
@@ -39,6 +40,7 @@ const el = {
   topbarShow: document.getElementById('topbar-show'),
   daysBadge: document.getElementById('days-badge'),
   sceneList: document.getElementById('scene-list'), backdropScene: document.getElementById('backdrop-scene'),
+  btnHideSkipped: document.getElementById('btn-hide-skipped'),
   backdropTrigger: document.getElementById('backdrop-trigger'),
   lightingCueList: document.getElementById('lighting-cue-list'),
   btnB: document.getElementById('btn-b'),
@@ -695,8 +697,6 @@ function openSceneMenu(flatIndex, anchor) {
   if (kind === 'master' || kind === 'custom') items.push([scene.skip ? 'Unskip' : 'Skip', () => toggleSkip(flatIndex)])
   if (kind === 'custom') items.push(['Rename', () => renameScene(flatIndex)])
   items.push(['Duplicate', () => duplicateScene(flatIndex)])
-  items.push([scene.dissolveOverride != null ? `Set Dissolve In (${scene.dissolveOverride}s)…` : 'Set Dissolve In…', () => setSceneDissolve(flatIndex)])
-  if (scene.dissolveOverride != null) items.push(['Use default dissolve', () => clearSceneDissolve(flatIndex)])
   items.push(['Delete', () => deleteScene(flatIndex)])
 
   const menu = document.createElement('div')
@@ -792,22 +792,16 @@ async function renameScene(flatIndex) {
 
 // Per-scene dissolve length: override the global dissolve for the transition into
 // this scene. Persists to the overlay (master → overrides, custom → the scene).
-async function setSceneDissolve(flatIndex) {
-  if (isEditLocked() || !state.showId) return
-  const scene = state.allScenes[flatIndex]
-  if (!scene) return
-  const cur = scene.dissolveOverride != null ? scene.dissolveOverride : state.dissolveTime
-  const input = await showInputModal('Dissolve length for this scene, in seconds (0–3)', cur, { type: 'number', min: 0, max: 3, step: 0.1 })
-  if (input == null) return
-  let v = parseFloat(input)
-  if (Number.isNaN(v)) return
-  v = Math.max(0, Math.min(3, Math.round(v * 10) / 10))
-  await pushUndo()
-  scene.dissolveOverride = v
+// Shared by the dissolve connector's "pin"/"reset" actions below.
+async function persistSceneDissolveOverride(scene, v) {
   const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
   if (scene.sceneRef.kind === 'master') {
-    layout.overrides[scene.sceneRef.sceneId] = layout.overrides[scene.sceneRef.sceneId] || {}
-    layout.overrides[scene.sceneRef.sceneId].dissolveOverride = v
+    if (v == null) {
+      if (layout.overrides[scene.sceneRef.sceneId]) delete layout.overrides[scene.sceneRef.sceneId].dissolveOverride
+    } else {
+      layout.overrides[scene.sceneRef.sceneId] = layout.overrides[scene.sceneRef.sceneId] || {}
+      layout.overrides[scene.sceneRef.sceneId].dissolveOverride = v
+    }
   } else if (scene.sceneRef.kind === 'custom') {
     const cs = layout.customScenes?.[scene.sceneRef.id]; if (cs) cs.dissolveOverride = v
   } else if (scene.sceneRef.kind === 'blackout') {
@@ -815,6 +809,15 @@ async function setSceneDissolve(flatIndex) {
   }
   layout.order = orderFromScenes()
   await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
+}
+// Pin this scene's dissolve to whatever the global slider currently reads.
+async function pinSceneDissolve(flatIndex) {
+  if (isEditLocked() || !state.showId) return
+  const scene = state.allScenes[flatIndex]
+  if (!scene) return
+  await pushUndo()
+  scene.dissolveOverride = state.dissolveTime
+  await persistSceneDissolveOverride(scene, state.dissolveTime)
   renderSceneList()
 }
 async function clearSceneDissolve(flatIndex) {
@@ -823,12 +826,7 @@ async function clearSceneDissolve(flatIndex) {
   if (!scene) return
   await pushUndo()
   scene.dissolveOverride = null
-  const layout = (await window.showrunner.getCustomLayout({ showId: state.showId })) || emptyLayoutClient()
-  if (scene.sceneRef.kind === 'master' && layout.overrides[scene.sceneRef.sceneId]) delete layout.overrides[scene.sceneRef.sceneId].dissolveOverride
-  if (scene.sceneRef.kind === 'custom' && layout.customScenes?.[scene.sceneRef.id]) layout.customScenes[scene.sceneRef.id].dissolveOverride = null
-  if (scene.sceneRef.kind === 'blackout' && layout.blackouts?.[scene.sceneRef.id]) layout.blackouts[scene.sceneRef.id].dissolveOverride = null
-  layout.order = orderFromScenes()
-  await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
+  await persistSceneDissolveOverride(scene, null)
   renderSceneList()
 }
 
@@ -918,6 +916,7 @@ async function deleteScene(flatIndex) {
 function renderSceneList() {
   if (!state.show) return
   closeSceneMenu()
+  closeDissolveConnector()
   el.sceneList.innerHTML = ''
   let lastAct = null
   // Act dividers only make sense while the list is in its original order. Once the
@@ -935,13 +934,18 @@ function renderSceneList() {
       el.sceneList.appendChild(div)
       lastAct = scene.actNum
     }
+    // A connector shows the dissolve length for the transition into `scene`.
+    // Skipped scenes never play, so their connector is omitted entirely rather
+    // than shown dimmed — the next connector down (above the next scene that
+    // actually plays) is the one that matters, and this avoids a decoy control.
+    if (!scene.skip) el.sceneList.appendChild(renderDissolveConnector(scene, flatIndex))
+    if (state.hideSkipped && scene.skip) return  // row hidden — flatIndex bookkeeping is unaffected
     const item = document.createElement('div')
     item.className = `scene-item${flatIndex === state.backdropIndex ? ' active' : ''}${scene.skip ? ' skipped' : ''}`
     const triggerSnippet = scene.backdrop_trigger
       ? `<div class="scene-trigger">${scene.backdrop_trigger}</div>` : ''
     const pageSnippet = scene.mti_page ? `<div class="scene-page">p.${scene.mti_page}</div>` : ''
-    const dissolveBadge = scene.dissolveOverride != null ? `<span class="scene-dissolve-badge" title="Custom dissolve into this scene">⟳ ${scene.dissolveOverride}s</span>` : ''
-    item.innerHTML = `<div class="scene-name">${escHtml(scene.name)}${dissolveBadge}</div>${triggerSnippet}${pageSnippet}`
+    item.innerHTML = `<div class="scene-name">${escHtml(scene.name)}</div>${triggerSnippet}${pageSnippet}`
     item.addEventListener('click', () => jumpToScene(flatIndex))
     // In Edit Mode: rows are draggable to reorder, and expose a single ⋯ menu.
     if (!isEditLocked()) {
@@ -961,6 +965,61 @@ function renderSceneList() {
     }
     el.sceneList.appendChild(item)
   })
+}
+
+// Thin strip between scene rows showing the dissolve length for the transition
+// into `scene`. Read-only in Show Mode; click to open the pin/reset popover
+// when unlocked.
+function renderDissolveConnector(scene, flatIndex) {
+  const row = document.createElement('div')
+  row.className = 'dissolve-connector'
+  row.textContent = scene.dissolveOverride != null ? `${scene.dissolveOverride}s` : 'Global Dissolve'
+  if (!isEditLocked()) {
+    row.classList.add('editable')
+    row.addEventListener('click', e => { e.stopPropagation(); openDissolveConnector(flatIndex, row) })
+  }
+  return row
+}
+
+let _dissolveConnectorEl = null
+function closeDissolveConnector() {
+  if (!_dissolveConnectorEl) return
+  _dissolveConnectorEl.remove(); _dissolveConnectorEl = null
+  document.removeEventListener('click', closeDissolveConnector)
+  // The slider was temporarily previewing a scene's value — restore the real default.
+  el.dissolveSlider.value = state.dissolveTime
+  el.dissolveLabel.textContent = `${state.dissolveTime.toFixed(1)}s`
+}
+function openDissolveConnector(flatIndex, anchor) {
+  closeSceneMenu()
+  closeDissolveConnector()
+  const scene = state.allScenes[flatIndex]
+  if (!scene || isEditLocked()) return
+
+  // Preview this scene's effective dissolve on the slider while the popover is
+  // open (restored to the true global value on close, in closeDissolveConnector).
+  const effective = scene.dissolveOverride != null ? scene.dissolveOverride : state.dissolveTime
+  el.dissolveSlider.value = effective
+  el.dissolveLabel.textContent = `${effective.toFixed(1)}s`
+
+  const items = [[`Set to ${state.dissolveTime.toFixed(1)}s`, () => pinSceneDissolve(flatIndex)]]
+  if (scene.dissolveOverride != null) items.push(['Reset to global', () => clearSceneDissolve(flatIndex)])
+
+  const menu = document.createElement('div')
+  menu.className = 'scene-menu'
+  items.forEach(([label, fn]) => {
+    const b = document.createElement('button')
+    b.className = 'scene-menu-item'
+    b.textContent = label
+    b.addEventListener('click', e => { e.stopPropagation(); closeDissolveConnector(); fn() })
+    menu.appendChild(b)
+  })
+  document.body.appendChild(menu)
+  const r = anchor.getBoundingClientRect()
+  menu.style.top = `${Math.round(r.bottom + 4)}px`
+  menu.style.left = `${Math.round(Math.min(r.left, window.innerWidth - 220))}px`
+  _dissolveConnectorEl = menu
+  setTimeout(() => document.addEventListener('click', closeDissolveConnector), 0)
 }
 
 function jumpToScene(flatIndex) {
@@ -1378,17 +1437,11 @@ function onColorSliderChange() {
   saveColorSettingsToDisk()
 }
 
-function closeColorPanel() {
-  el.colorPanel.classList.add('hidden')
-  el.btnColorToggle.classList.remove('active')
-}
-
+// Color Correction now stays permanently visible in the right panel — clicking
+// the "Color" button just scrolls it into view rather than toggling it.
 el.btnColorToggle.addEventListener('click', () => {
-  const open = el.colorPanel.classList.toggle('hidden') === false
-  el.btnColorToggle.classList.toggle('active', open)
+  el.colorPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
 })
-
-document.getElementById('cc-close').addEventListener('click', closeColorPanel)
 
 el.ccBrightness.addEventListener('input', onColorSliderChange)
 el.ccContrast.addEventListener('input', onColorSliderChange)
@@ -1554,6 +1607,14 @@ el.btnEditModeLock.addEventListener('click', () => {
 el.btnInsertBlackout.addEventListener('click', insertBlackout)
 el.btnUploadScene.addEventListener('click', uploadScene)
 el.btnUploadStill.addEventListener('click', uploadStill)
+
+// Display-only filter — not persisted, resets to "show everything" each launch.
+el.btnHideSkipped.addEventListener('click', () => {
+  state.hideSkipped = !state.hideSkipped
+  el.btnHideSkipped.classList.toggle('active', state.hideSkipped)
+  el.btnHideSkipped.textContent = state.hideSkipped ? 'Show Skipped' : 'Hide Skipped'
+  renderSceneList()
+})
 
 // ── Printable PDF cue sheet ──────────────────────────────────────────────────
 // Reflects the CUSTOMIZED running order: sequential numbers (skipped rows struck
