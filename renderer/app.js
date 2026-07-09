@@ -893,6 +893,7 @@ async function duplicateScene(flatIndex) {
   const cs = {
     id,
     origin: 'duplicate',
+    still: !!src.isStill,  // otherwise a duplicated still silently becomes "a video" and fails to load
     sourceSceneId: src.sceneRef.kind === 'master' ? src.sceneRef.sceneId : (src.sourceSceneId || null),
     createdAt: new Date().toISOString(),
     name: copyName,
