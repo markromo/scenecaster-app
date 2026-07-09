@@ -281,6 +281,12 @@ function resetCustomLayout(showId, mode) {
 }
 
 function registerIPC() {
+  // Sandboxed preload's polyfilled `require('url')` doesn't include
+  // pathToFileURL, so this runs here instead, synchronously (renderer code
+  // that needs it isn't async).
+  ipcMain.on('to-file-url-sync', (event, filePath) => {
+    event.returnValue = pathToFileURL(filePath).href
+  })
   ipcMain.handle('check-license', () => checkLicense())
   ipcMain.handle('activate-license', (_, token) => activateLicense(token))
   ipcMain.handle('finalize-license', (_, opts) => finalizeLicense(opts))

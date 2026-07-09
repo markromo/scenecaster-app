@@ -1,6 +1,15 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('showrunner', {
+  // Correctly percent-encodes a filesystem path into a valid file:// URL —
+  // customer-uploaded filenames can contain # or ? (unlike our own show
+  // videos, which always get clean names from the production pipeline),
+  // and those characters are URL-structural, not plain text: an unescaped
+  // # truncates the path at a fragment, ? at a query string. Building the
+  // URL with plain string concatenation silently fails to load in that case.
+  // (Routed through main via sync IPC — the sandboxed preload's polyfilled
+  // require('url') doesn't include pathToFileURL.)
+  toFileUrl:       (path)        => ipcRenderer.sendSync('to-file-url-sync', path),
   checkLicense:    ()            => ipcRenderer.invoke('check-license'),
   activateLicense: (token)       => ipcRenderer.invoke('activate-license', token),
   finalizeLicense: (opts)        => ipcRenderer.invoke('finalize-license', opts),

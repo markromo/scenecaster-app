@@ -1122,15 +1122,20 @@ function playCurrentBackdrop() {
   if (!scene.video_file) return
   const filePath = `${state.folderPath}/${scene.video_file}`
   const cc = getColorForScene(state.backdropIndex)
+  // Customer-uploaded filenames can contain # or ? (unlike our own show videos,
+  // which always get clean names) — those are URL-structural characters, so a
+  // plain file://${filePath} string silently fails to load. toFileUrl() encodes
+  // the path correctly.
+  const ledSrc = window.showrunner.toFileUrl(filePath)
   const previewSrc = state.mediaPort
     ? `http://127.0.0.1:${state.mediaPort}/${encodeURIComponent(scene.video_file)}`
-    : `file://${filePath}`
+    : ledSrc
   if (scene.isStill) {
     // Stills hold (no loop) and display in an image layer.
-    window.showrunner.sendToLed({ type: 'still', src: `file://${filePath}`, dissolve, ...cc })
+    window.showrunner.sendToLed({ type: 'still', src: ledSrc, dissolve, ...cc })
     previewCommand({ type: 'still', src: previewSrc, dissolve, colorSettings: cc })
   } else {
-    window.showrunner.sendToLed({ type: 'play', src: `file://${filePath}`, dissolve, loop: true, ...cc })
+    window.showrunner.sendToLed({ type: 'play', src: ledSrc, dissolve, loop: true, ...cc })
     previewCommand({ type: 'play', src: previewSrc, dissolve, loop: true, colorSettings: cc })
   }
   // Update sliders to show new scene's color settings
