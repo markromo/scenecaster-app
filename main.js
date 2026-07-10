@@ -91,7 +91,17 @@ function getMachineId() {
   return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 32)
 }
 
-const LICENSE_SECRET = '625e52515fb8f1ed9fcf73c801c9fa2c67c0c2f1fed30384dde29d378a96c4b3'
+// ES256 (asymmetric): the only scheme used for licenses now — the old HS256
+// shared-secret scheme (embedded in this file in plaintext, which is exactly
+// why it was forgeable) is gone for good; no HS256-signed keys remain
+// outstanding (confirmed 2026-07-10). This is the PUBLIC half of the key pair
+// — safe to ship inside the app, since it can only verify signatures, never
+// create them. The private half lives solely in Render's LICENSE_PRIVATE_KEY
+// env var and never touches this codebase.
+const LICENSE_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE9twH5AR6nmEoMgS9NNbD0AVk52xJ
+cxmI06svXfI296umOx2Qa2suCGLAkKiGwu0Z+zNSNQlQHQfxsurWHcZ3vQ==
+-----END PUBLIC KEY-----`
 
 function base64UrlDecode(str) {
   str = str.replace(/-/g, '+').replace(/_/g, '/')
@@ -104,11 +114,13 @@ function verifyJWT(token) {
     const parts = token.trim().split('.')
     if (parts.length !== 3) return { valid: false, error: 'Malformed key' }
     const [headerB64, payloadB64, sigB64] = parts
-    const expectedSig = crypto
-      .createHmac('sha256', LICENSE_SECRET)
-      .update(`${headerB64}.${payloadB64}`)
-      .digest('base64url')
-    if (expectedSig !== sigB64) return { valid: false, error: 'Invalid key — signature mismatch' }
+    const header = JSON.parse(base64UrlDecode(headerB64).toString('utf8'))
+    const signedInput = `${headerB64}.${payloadB64}`
+    const sig = base64UrlDecode(sigB64)
+
+    if (header.alg !== 'ES256') return { valid: false, error: 'Unrecognized key signing method' }
+    const sigValid = crypto.verify('sha256', Buffer.from(signedInput), { key: LICENSE_PUBLIC_KEY, dsaEncoding: 'ieee-p1363' }, sig)
+    if (!sigValid) return { valid: false, error: 'Invalid key — signature mismatch' }
     const payload = JSON.parse(base64UrlDecode(payloadB64).toString('utf8'))
     return { valid: true, payload }
   } catch (e) {
