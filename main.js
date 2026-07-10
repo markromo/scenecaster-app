@@ -8,6 +8,9 @@ const { pathToFileURL } = require('url')
 const http = require('http')
 let mediaServer = null
 
+const VIDEO_EXTENSIONS = ['mp4', 'mov', 'webm', 'mkv']
+const VIDEO_EXTENSIONS_RE = new RegExp(`\\.(${VIDEO_EXTENSIONS.join('|')})$`, 'i')
+
 function findInDir(dir, name) {
   try {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -203,7 +206,7 @@ function deleteShowFiles() {
   ensureDirs()
   let count = 0
   try {
-    const files = fs.readdirSync(VIDEOS_DIR).filter(f => /\.(mp4|mov|webm|mkv)$/i.test(f))
+    const files = fs.readdirSync(VIDEOS_DIR).filter(f => VIDEO_EXTENSIONS_RE.test(f))
     for (const f of files) {
       fs.unlinkSync(path.join(VIDEOS_DIR, f))
       count++
@@ -214,31 +217,10 @@ function deleteShowFiles() {
   return count
 }
 
-function getLocalVideos() {
-  ensureDirs()
-  return fs.readdirSync(VIDEOS_DIR)
-    .filter(f => /\.(mp4|mov|webm|mkv)$/i.test(f))
-    .map(f => ({ name: f.replace(/\.[^.]+$/, ''), filename: f, path: path.join(VIDEOS_DIR, f), size: fs.statSync(path.join(VIDEOS_DIR, f)).size }))
-}
-
-function loadShowFolder(folderPath) {
-  const cuesPath = path.join(folderPath, 'cues.json')
-  if (!fs.existsSync(cuesPath)) return { success: false, error: 'No cues.json found in folder' }
-  const cues = JSON.parse(fs.readFileSync(cuesPath, 'utf8'))
-  // Dev folder-loaded shows get a synthetic showId (prefixed to keep them
-  // visually distinct from bundled shows) so custom layouts persist for them too.
-  const showId = `folder-${slugify(cues.show?.title)}`
-  return { success: true, cues, folderPath, showId }
-}
-
 // ── Custom layout (Director's Custom Mode foundation) ────────────────────────
 // A per-show overlay stored SEPARATELY from the master cues cache, so the master
 // (cues-{showId}.json) is never mutated. Holds the scene order, sparse per-scene
 // overrides, uploaded/duplicated scenes, blackouts, and skip flags.
-function slugify(str) {
-  return String(str || 'show').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'show'
-}
-
 function customLayoutPath(showId) {
   return path.join(CONFIG_DIR, `custom-layout-${showId}.json`)
 }
@@ -290,7 +272,6 @@ function registerIPC() {
   ipcMain.handle('check-license', () => checkLicense())
   ipcMain.handle('activate-license', (_, token) => activateLicense(token))
   ipcMain.handle('finalize-license', (_, opts) => finalizeLicense(opts))
-  ipcMain.handle('get-videos', () => getLocalVideos())
   ipcMain.handle('send-to-led', (_, data) => {
     if (!ledWindow) return
     ledWindow.webContents.send('led-command', data)
@@ -303,14 +284,9 @@ function registerIPC() {
     createLedWindow()
     return { success: true }
   })
-  ipcMain.handle('load-show-folder', async () => {
-    const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ['openDirectory'] })
-    if (canceled) return null
-    return loadShowFolder(filePaths[0])
-  })
   ipcMain.handle('import-video', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
-      filters: [{ name: 'Video files', extensions: ['mp4', 'mov', 'webm', 'mkv'] }],
+      filters: [{ name: 'Video files', extensions: VIDEO_EXTENSIONS }],
       properties: ['openFile', 'multiSelections']
     })
     if (canceled) return []
@@ -351,13 +327,6 @@ function registerIPC() {
     } catch (e) {
       return { success: false, error: e.message }
     }
-  })
-  ipcMain.handle('get-video-data-url', (_, videoPath) => {
-    const ext = path.extname(videoPath).slice(1).toLowerCase()
-    const mimeMap = { mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska' }
-    const mime = mimeMap[ext] || 'video/mp4'
-    const data = fs.readFileSync(videoPath)
-    return `data:${mime};base64,${data.toString('base64')}`
   })
   // Trigger/lighting edits now write into the custom-layout overlay keyed by the
   // scene's STABLE id (master scene.id, or a custom scene's own id) — never by
@@ -451,7 +420,7 @@ function registerIPC() {
   ipcMain.handle('get-download-status', () => {
     ensureDirs()
     const existing = fs.existsSync(VIDEOS_DIR)
-      ? fs.readdirSync(VIDEOS_DIR).filter(f => /\.(mp4|mov|webm|mkv)$/i.test(f))
+      ? fs.readdirSync(VIDEOS_DIR).filter(f => VIDEO_EXTENSIONS_RE.test(f))
       : []
     return { videosDir: VIDEOS_DIR, existing }
   })

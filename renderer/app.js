@@ -10,7 +10,6 @@ const state = {
   backdropIndex: -1,
   lightingIndex: -1,
   lightingSubIndex: 0,
-  playedScenes: new Set(),
   dissolveTime: 1.0,
   allScenes: [],
   colorSettings: {}, // keyed by per-scene instanceId (legacy: video filename), holds color correction
@@ -92,11 +91,15 @@ function showPreviewMissing(src) {
 function hidePreviewMissing() { previewMissingEl.classList.add('hidden') }
 let prevTop = prevA
 let prevBot = prevB
+let previewHasStartedOnce = false  // true once the first preview video has actually begun playing
 
 // Preview still: fade the image in on top and fade the video layers out beneath it.
 function previewStill(src, dissolve, colorSettings) {
   const d = dissolve <= 0.1 ? 0 : dissolve
   prevA.ontimeupdate = null; prevB.ontimeupdate = null
+  // Otherwise whichever video was showing keeps decoding invisibly in the
+  // background for as long as the still is displayed.
+  prevA.pause(); prevB.pause()
   prevStill.style.transition = `opacity ${d}s ease-in-out`
   prevStill.style.filter = colorSettings ? makeColorFilter(colorSettings) : 'none'
   prevStill.onerror = () => showPreviewMissing(src)
@@ -128,6 +131,7 @@ function previewCrossfadeTo(src, dissolve, looping, colorSettings) {
   prevTop.style.zIndex = '1'
 
   function startFade() {
+    previewHasStartedOnce = true
     hidePreviewMissing()
     prevBot.play().catch(() => {})
     if (dissolve <= 0) {
@@ -150,7 +154,11 @@ function previewCrossfadeTo(src, dissolve, looping, colorSettings) {
     document.getElementById('preview-container')?.classList.add('playing')
   }
 
-  if (prevTop.readyState === 0) {
+  // Keyed off previewHasStartedOnce, not prevTop.readyState — previewStill()
+  // pauses (but doesn't clear the src of) the other video layer, but showing a
+  // still elsewhere could still leave a layer with no src ever loaded, so this
+  // must not be re-inferred from readyState the way the old code did.
+  if (!previewHasStartedOnce) {
     let botReady = false, topPlaying = false
     const tryStart = () => { if (botReady && topPlaying) startFade() }
     prevBot.onloadeddata = () => { botReady = true; tryStart() }
@@ -438,7 +446,6 @@ function flattenCustomScene(cs, skip) {
     originalCueNumber: null,
     skip: !!skip,
     renamable: true,
-    origin: cs.origin,
     isStill: !!cs.still,
     dissolveOverride: cs.dissolveOverride != null ? cs.dissolveOverride : null,
     name: cs.name || cs.backdrop?.label || 'Custom Scene',
@@ -476,7 +483,7 @@ async function mountShow(cues, folderPath, payload, daysRemaining, showId) {
   state.daysRemaining = daysRemaining
   state.mediaPort = await window.showrunner.startMediaServer(folderPath)
   state.backdropIndex = -1; state.lightingIndex = -1; state.lightingSubIndex = 0
-  state.playedScenes = new Set(); state.allScenes = []
+  state.allScenes = []
 
   // Ownership predicate — à la carte licenses only unlock purchased scenes.
   // Applied per-entry during the merge below (not as a pre-filter) so it composes
@@ -536,7 +543,7 @@ async function mountShow(cues, folderPath, payload, daysRemaining, showId) {
   const savedColors = await window.showrunner.loadColorSettings()
   state.colorSettings = savedColors || {}
 
-  renderSceneList(); updateCenterPanel(); updateNextPanel()
+  renderSceneList(); updateCenterPanel()
   showScreen('player')
 }
 
@@ -618,7 +625,7 @@ async function insertBlackout() {
   layout.blackouts[id] = bo
   layout.order = orderFromScenes()
   await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
-  renderSceneList(); updateCenterPanel(); updateNextPanel()
+  renderSceneList(); updateCenterPanel()
   scrollSceneIntoView(at)
 }
 
@@ -629,7 +636,7 @@ async function toggleSkip(flatIndex) {
   await pushUndo()
   scene.skip = !scene.skip
   await persistArrangement()
-  renderSceneList(); updateNextPanel()
+  renderSceneList()
 }
 
 // Move a scene from one slot to another (drag-and-drop, cross-act allowed).
@@ -648,7 +655,7 @@ async function moveSceneTo(from, to) {
   state.backdropIndex = curId ? arr.findIndex(s => s.instanceId === curId) : -1
   state.lightingIndex = ligId ? arr.findIndex(s => s.instanceId === ligId) : state.backdropIndex
   await persistArrangement()
-  renderSceneList(); updateCenterPanel(); updateNextPanel()
+  renderSceneList(); updateCenterPanel()
 }
 
 // ── Scene row drag + ⋯ options menu ──────────────────────────────────────────
@@ -761,7 +768,7 @@ async function uploadScene() {
   }
   layout.order = orderFromScenes()
   await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
-  renderSceneList(); updateCenterPanel(); updateNextPanel(); scrollSceneIntoView(at - 1)
+  renderSceneList(); updateCenterPanel(); scrollSceneIntoView(at - 1)
 }
 
 // Upload the director's own still image(s) as new scenes. Stills always HOLD —
@@ -788,7 +795,7 @@ async function uploadStill() {
   }
   layout.order = orderFromScenes()
   await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
-  renderSceneList(); updateCenterPanel(); updateNextPanel(); scrollSceneIntoView(at - 1)
+  renderSceneList(); updateCenterPanel(); scrollSceneIntoView(at - 1)
 }
 
 // Rename an uploaded/duplicated scene (custom scenes only — our scene names are
@@ -807,7 +814,7 @@ async function renameScene(flatIndex) {
   if (cs) { cs.name = name; if (cs.backdrop) cs.backdrop.label = name }
   layout.order = orderFromScenes()
   await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
-  renderSceneList(); updateCenterPanel(); updateNextPanel()
+  renderSceneList(); updateCenterPanel()
 }
 
 // Per-scene dissolve length: override the global dissolve for the transition into
@@ -884,7 +891,7 @@ async function duplicateScene(flatIndex) {
     layout.blackouts[id] = bo
     layout.order = orderFromScenes()
     await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
-    renderSceneList(); updateCenterPanel(); updateNextPanel(); scrollSceneIntoView(flatIndex + 1)
+    renderSceneList(); updateCenterPanel(); scrollSceneIntoView(flatIndex + 1)
     return
   }
   await pushUndo()
@@ -910,7 +917,7 @@ async function duplicateScene(flatIndex) {
   layout.customScenes[id] = cs
   layout.order = orderFromScenes()
   await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
-  renderSceneList(); updateCenterPanel(); updateNextPanel()
+  renderSceneList(); updateCenterPanel()
   scrollSceneIntoView(at)
 }
 
@@ -935,7 +942,7 @@ async function deleteScene(flatIndex) {
   if (s.sceneRef.kind === 'blackout' && layout.blackouts) delete layout.blackouts[s.sceneRef.id]
   layout.order = orderFromScenes()
   await window.showrunner.saveCustomLayout({ showId: state.showId, layout })
-  renderSceneList(); updateCenterPanel(); updateNextPanel()
+  renderSceneList(); updateCenterPanel()
 }
 
 // ── Scene list ──────────────────────────────────────────────────────────────────
@@ -1083,7 +1090,7 @@ function openDissolveConnector(flatIndex, anchor) {
 
 function jumpToScene(flatIndex) {
   state.backdropIndex = flatIndex; state.lightingIndex = flatIndex; state.lightingSubIndex = 0
-  playCurrentBackdrop(); updateCenterPanel(); updateNextPanel(); renderSceneList()
+  playCurrentBackdrop(); updateCenterPanel(); renderSceneList()
   scrollSceneIntoView(flatIndex)
 }
 
@@ -1099,10 +1106,9 @@ function advanceBackdrop() {
   let next = state.backdropIndex + 1
   while (next < state.allScenes.length && state.allScenes[next]?.skip) next++
   if (next >= state.allScenes.length) return  // nothing playable ahead — stay put
-  if (state.backdropIndex >= 0) state.playedScenes.add(state.backdropIndex)
   state.backdropIndex = next
   state.lightingIndex = state.backdropIndex; state.lightingSubIndex = 0
-  playCurrentBackdrop(); updateCenterPanel(); updateNextPanel(); renderSceneList()
+  playCurrentBackdrop(); updateCenterPanel(); renderSceneList()
   scrollSceneIntoView(state.backdropIndex)
 }
 
@@ -1153,7 +1159,7 @@ function advanceLighting() {
   const scene = state.allScenes[state.lightingIndex]
   const cues = scene?.lighting_cues || []
   if (state.lightingSubIndex < cues.length - 1) state.lightingSubIndex++
-  updateCenterPanel(); updateNextPanel()
+  updateCenterPanel()
 }
 
 function backLighting() {
@@ -1166,7 +1172,7 @@ function backLighting() {
     const prevCues = prevScene?.lighting_cues || []
     state.lightingSubIndex = Math.max(0, prevCues.length - 1)
   }
-  updateCenterPanel(); updateNextPanel()
+  updateCenterPanel()
 }
 
 // ── Center panel update ─────────────────────────────────────────────────────────
@@ -1205,11 +1211,6 @@ function updateCenterPanel() {
   el.btnL.disabled = atLastCue
   el.btnLBack.disabled = state.lightingSubIndex <= 0
 }
-
-// "Next Up" panel was removed (backdrop/lighting/scene lookahead is already
-// visible in the scene queue) — kept as a no-op since many call sites still
-// call it after state changes.
-function updateNextPanel() {}
 
 // ── Controls ────────────────────────────────────────────────────────────────────
 
@@ -1282,7 +1283,7 @@ document.getElementById('modal-save').addEventListener('click', () => {
   scene.lighting_cues = newCues
   state.lightingSubIndex = Math.min(state.lightingSubIndex, Math.max(0, newCues.length - 1))
   window.showrunner.saveLightingCue({ showId: state.showId, sceneRef: scene.sceneRef, cues: newCues })
-  modal.classList.add('hidden'); updateCenterPanel(); updateNextPanel()
+  modal.classList.add('hidden'); updateCenterPanel()
 })
 
 modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden') })
@@ -1351,7 +1352,6 @@ function startTriggerEdit() {
     triggerToolbar.classList.add('hidden')
     _triggerSaveFn = null
     el.btnTriggerEdit.textContent = '✏️ Edit'
-    updateNextPanel()
     window.showrunner.saveBackdropTrigger({
       showId: state.showId,
       sceneRef: scene.sceneRef,
