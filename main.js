@@ -489,10 +489,18 @@ function registerIPC() {
         if (manifestResp.ok) {
           const manifest = await manifestResp.json()
           const packs = Object.entries(manifest.packs || {})
+          const matches = packs.filter(([, members]) => ids.some(sceneId => members.includes(sceneId)))
+          // A scene id legitimately matches both the -adult and -jr pack of the
+          // SAME show — that's normal. It should never match packs belonging to
+          // two DIFFERENT shows; if it does, the manifest naming rule was
+          // violated somewhere upstream. Don't silently guess which show the
+          // customer actually bought — refuse and surface it instead.
+          const distinctShows = new Set(matches.map(([id]) => id.replace(/-(adult|jr|full)$/i, '')))
+          if (distinctShows.size > 1) {
+            return { success: false, error: 'This license could not be resolved to a single show — please contact support.' }
+          }
           const preferredSuffix = isJr ? '-jr' : '-adult'
-          const match =
-            packs.find(([id, members]) => id.endsWith(preferredSuffix) && ids.some(sceneId => members.includes(sceneId))) ||
-            packs.find(([, members]) => ids.some(sceneId => members.includes(sceneId)))
+          const match = matches.find(([id]) => id.endsWith(preferredSuffix)) || matches[0]
           if (match) showId = match[0]
         }
       } catch (e) {

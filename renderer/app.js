@@ -491,10 +491,21 @@ async function mountShow(cues, folderPath, payload, daysRemaining, showId) {
   const ownedPackIds = Array.isArray(payload?.p) ? payload.p
                      : payload?.p ? [payload.p] : null
   const isFullShow = !ownedPackIds || ownedPackIds.some(id => ['-adult', '-jr', '-full'].some(s => id.endsWith(s)))
+  // Show-scoped pack list for the show actually being mounted, if the manifest
+  // is available (it may not be, e.g. fully offline — falls back to the plain
+  // name check below rather than blocking playback).
+  const showPack = _dlManifest?.packs?.[showId] || null
   function isOwned(masterScene) {
     if (isFullShow) return true
     const videoId = (masterScene.backdrop?.file || '').replace('.mp4', '')
-    return !videoId || ownedPackIds.includes(videoId)
+    if (!videoId) return true
+    if (!ownedPackIds.includes(videoId)) return false
+    // Defense in depth: a name match against the license alone isn't enough —
+    // also confirm the scene genuinely belongs to THIS show's own pack. This
+    // is what stops a licensed name from unlocking a different show's scene
+    // if a naming collision (which the manifest naming rule + validator are
+    // meant to prevent) ever slips through anyway.
+    return !showPack || showPack.includes(videoId)
   }
 
   // Index master scenes by their stable id, retaining original position (for the
