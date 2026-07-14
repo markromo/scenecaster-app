@@ -658,14 +658,56 @@ function createWindows() {
   // the mouse/keyboard. Use the "Open External Screen" button to open it manually
   // during dev when you actually want to test projector output.
   if (app.isPackaged) {
-    // Auto-open LED window if external display is already connected at launch
-    if (screen.getAllDisplays().find(d => d.id !== primaryDisplay.id)) {
-      createLedWindow()
+    // macOS doesn't always have display enumeration fully settled the instant
+    // app.whenReady() fires — especially right after boot or waking from sleep
+    // — so every trigger below waits a moment before trusting
+    // screen.getAllDisplays() and recreating the LED window.
+    //
+    // Debounced through one shared timer rather than each trigger scheduling
+    // its own independent setTimeout: startup, display-added, and
+    // display-metrics-changed can all fire within milliseconds of each other
+    // (e.g. a display settling right as the app launches), and without this,
+    // two of them could each schedule their own createLedWindow() and end up
+    // with two overlapping LED windows instead of one clean recreation.
+    const DISPLAY_SETTLE_DELAY_MS = 500
+    let ledWindowRefreshTimer = null
+    function scheduleLedWindowRefresh(reason) {
+      console.log(`[display] ${reason} — scheduling LED window refresh in ${DISPLAY_SETTLE_DELAY_MS}ms. Displays:`, screen.getAllDisplays().map(d => ({ id: d.id, bounds: d.bounds })))
+      if (ledWindowRefreshTimer) clearTimeout(ledWindowRefreshTimer)
+      ledWindowRefreshTimer = setTimeout(() => {
+        ledWindowRefreshTimer = null
+        if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
+        if (screen.getAllDisplays().find(d => d.id !== primaryDisplay.id)) {
+          createLedWindow()
+        }
+      }, DISPLAY_SETTLE_DELAY_MS)
     }
-    // Auto-open LED window whenever a display is plugged in
-    screen.on('display-added', () => {
-      if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
-      setTimeout(() => createLedWindow(), 500) // small delay lets OS register the display
+
+    // Startup: don't trust getAllDisplays() synchronously — go through the
+    // same settle-and-check path as every other trigger.
+    scheduleLedWindowRefresh('startup')
+
+    // A genuinely new display being plugged in.
+    screen.on('display-added', (event, newDisplay) => {
+      console.log('[display] display-added event:', { id: newDisplay.id, bounds: newDisplay.bounds })
+      scheduleLedWindowRefresh('display-added')
+    })
+
+    // An already-connected display's arrangement/resolution/rotation changing
+    // (e.g. someone touching System Settings → Displays) fires THIS, not
+    // display-added — display-added is only for a new display being plugged
+    // in. Without this listener, the LED window could end up on stale bounds
+    // (or never get created at all if it missed the startup window) with no
+    // way to recover short of a real unplug/replug.
+    screen.on('display-metrics-changed', (event, display, changedMetrics) => {
+      console.log('[display] display-metrics-changed event:', { id: display.id, bounds: display.bounds, changedMetrics })
+      scheduleLedWindowRefresh('display-metrics-changed')
+    })
+
+    // Not a fix for this bug, but logging removal is cheap and closes a real
+    // gap: previously nothing observed a display disconnecting at all.
+    screen.on('display-removed', (event, oldDisplay) => {
+      console.log('[display] display-removed event:', { id: oldDisplay.id, bounds: oldDisplay.bounds })
     })
   }
 
