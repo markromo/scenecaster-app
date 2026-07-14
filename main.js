@@ -592,6 +592,46 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+// Recovers the LED window if its renderer hangs or dies without any actual
+// display reconfiguration happening — distinct failure class from the
+// screen.on(...) handling in createWindows(), which only fires when macOS
+// reports the display setup itself changed. A frozen/crashed renderer fires
+// neither display-added nor display-metrics-changed, since nothing about the
+// display changed — only the window's content did. The existing keep-alive
+// heartbeat only tries to prevent renderer suspension proactively; this is
+// the fallback for when it happens anyway. Logged with a distinct
+// [renderer-health] prefix (vs. [display]) so a future report's console
+// output makes it unambiguous which mechanism actually fired.
+function attachLedWindowHealthMonitoring(win) {
+  let unresponsiveRecoveryTimer = null
+
+  win.webContents.on('unresponsive', () => {
+    console.log('[renderer-health] LED window unresponsive — will recreate in 3s unless it recovers on its own')
+    if (unresponsiveRecoveryTimer) clearTimeout(unresponsiveRecoveryTimer)
+    unresponsiveRecoveryTimer = setTimeout(() => {
+      unresponsiveRecoveryTimer = null
+      console.log('[renderer-health] LED window still unresponsive after grace period — recreating')
+      if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
+      createLedWindow()
+    }, 3000)
+  })
+
+  win.webContents.on('responsive', () => {
+    if (unresponsiveRecoveryTimer) {
+      console.log('[renderer-health] LED window recovered on its own — cancelling scheduled recreate')
+      clearTimeout(unresponsiveRecoveryTimer)
+      unresponsiveRecoveryTimer = null
+    }
+  })
+
+  win.webContents.on('render-process-gone', (event, details) => {
+    console.log('[renderer-health] LED window render process gone:', details)
+    if (unresponsiveRecoveryTimer) { clearTimeout(unresponsiveRecoveryTimer); unresponsiveRecoveryTimer = null }
+    if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
+    createLedWindow()
+  })
+}
+
 function createLedWindow() {
   const { screen } = require('electron')
   const primaryDisplay = screen.getPrimaryDisplay()
@@ -607,6 +647,7 @@ function createLedWindow() {
     })
     ledWindow.loadFile(path.join(__dirname, 'renderer', 'led.html'))
     ledWindow.setAlwaysOnTop(true, 'screen-saver')
+    attachLedWindowHealthMonitoring(ledWindow)
     ledWindow.webContents.once('did-finish-load', () => {
       // Delay gives macOS time to settle the window on the external display before
       // requesting fullscreen — improves reliability across different display setups
@@ -625,6 +666,7 @@ function createLedWindow() {
       webPreferences: { preload: path.join(__dirname, 'preload.js'), nodeIntegration: false, contextIsolation: true, webSecurity: false, backgroundThrottling: false }
     })
     ledWindow.loadFile(path.join(__dirname, 'renderer', 'led.html'))
+    attachLedWindowHealthMonitoring(ledWindow)
     ledWindow.webContents.once('did-finish-load', () => {
       ledWindow.webContents.send('no-external-display')
       if (mainWindow && !mainWindow.isDestroyed()) {
