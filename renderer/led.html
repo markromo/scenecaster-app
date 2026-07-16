@@ -38,7 +38,7 @@ function getInactive() { return active === 'a' ? { wrap: wrapB, vid: vidB, img: 
 
 // A wrap can hold either a looping video or a held still. Flip between them.
 function setVideoMode(w) { const v = w.querySelector('video'), i = w.querySelector('img'); i.style.display = 'none'; i.removeAttribute('src'); v.style.display = '' }
-function setStillMode(w) { const v = w.querySelector('video'), i = w.querySelector('img'); v.pause(); v.ontimeupdate = null; v.removeAttribute('src'); v.style.display = 'none'; i.style.display = 'block' }
+function setStillMode(w) { const v = w.querySelector('video'), i = w.querySelector('img'); v.pause(); v.ontimeupdate = null; v.removeAttribute('src'); v._playable = false; v.style.display = 'none'; i.style.display = 'block' }
 
 function fadeWrap(el, toOpacity, durationSec) {
   if (el._fadeTimer) { clearInterval(el._fadeTimer); el._fadeTimer = null }
@@ -57,9 +57,25 @@ function makeFilter(b, c, h, s) {
   return `brightness(${b ?? 100}%) contrast(${c ?? 100}%) hue-rotate(${h ?? 0}deg) saturate(${s ?? 100}%)`
 }
 
+// Bumped and stamped onto a video element every time it's claimed as a new
+// crossfadeTo() call's inVid — lets a call's OWN delayed cleanup (below) tell
+// whether the element it's about to wipe has since been reclaimed by a newer
+// call, instead of blindly wiping whatever is there. Fixes a real race: if a
+// scheduled loop-dissolve and a manual B-key advance land close enough
+// together, the loop-dissolve call's delayed cleanup used to fire after the
+// B-key call had already started loading its own src into the same element,
+// wiping that in-progress load out from under it — the "sometimes the src
+// never gets set" freeze. Added 2026-07-14.
+let videoGen = 0
+
 function crossfadeTo(src, dissolve, looping, colorSettings) {
   const { wrap: inWrap, vid: inVid } = getInactive()
   const { wrap: outWrap, vid: outVid } = getActive()
+  // Claim inVid for this call — any earlier call whose delayed cleanup still
+  // targets this same element (captured as ITS outVid before `active` last
+  // flipped) will see the generation mismatch below and skip the wipe.
+  inVid._gen = ++videoGen
+  const outVidGenAtCapture = outVid._gen
   setVideoMode(inWrap)  // in case this wrap was previously showing a still
   // Apply color to incoming wrap immediately — outWrap keeps its own filter throughout
   if (looping) {
@@ -77,10 +93,29 @@ function crossfadeTo(src, dissolve, looping, colorSettings) {
   outWrap.style.zIndex = '1'
   inVid.src  = src
   inVid.loop = false
+  // Tracked explicitly rather than relying on reading .src back later — confirmed
+  // 2026-07-15 that a cleared element's .src can still read back truthy in some
+  // states, which was making keep-alive attempt play() on cleaned-up elements and
+  // log a cosmetic NotSupportedError. This flag is the actual source of truth for
+  // "does this element currently hold real, resumable content."
+  inVid._playable = true
+  console.log(`[scene-change] inVid.src assigned — requested="${src}" readBack="${inVid.src}"`)
+  // No error handler previously existed on this element at all — a load failure
+  // (bad path, unsupported codec, etc.) would fire 'error' with no listener,
+  // onloadeddata would then never fire, and the video would sit stuck forever
+  // with no visible signal anywhere. Added 2026-07-14 to close that blind spot.
+  inVid.onerror = () => {
+    const err = inVid.error
+    console.warn(`[scene-change] inVid load error — src="${inVid.src}" code=${err?.code} message=${err?.message || '(none)'}`)
+  }
 
   function startFade() {
     hasStartedOnce = true
-    inVid.play().catch(e => console.warn('play error:', e))
+    console.log(`[scene-change] startFade — inVid.src="${inVid.src}"`)
+    inVid.play().then(
+      () => console.log(`[scene-change] inVid.play() resolved — src="${inVid.src}"`),
+      e => console.warn(`[scene-change] inVid.play() rejected — src="${inVid.src}" — ${e.name}: ${e.message}`)
+    )
     active = active === 'a' ? 'b' : 'a'
     // Wait for first real decoded frame before switching — prevents black flash
     const doSwitch = () => {
@@ -92,11 +127,23 @@ function crossfadeTo(src, dissolve, looping, colorSettings) {
         fadeWrap(inWrap, 1, dissolve)
       }
       setTimeout(() => {
+        // Fade-end compositing snapshot — added 2026-07-15 to directly confirm or
+        // rule out a stacking-order theory for the intermittent invisible-freeze
+        // reports: play() resolving only proves decode started, not that the new
+        // frame is actually on top and visible. Logged unconditionally, before the
+        // reclaim check below, so it reflects real on-screen state either way.
+        const reclaimed = outVid._gen !== outVidGenAtCapture
+        console.log(`[fade-end] in(wrap=${inWrap.id} z=${inWrap.style.zIndex} opacity=${inWrap.style.opacity} vid=${inVid.id} currentTime=${inVid.currentTime?.toFixed(2)}) out(wrap=${outWrap.id} z=${outWrap.style.zIndex} opacity=${outWrap.style.opacity} vid=${outVid.id} currentTime=${outVid.currentTime?.toFixed(2)} reclaimed=${reclaimed})`)
+        if (reclaimed) {
+          console.log(`[scene-change] cleanup SKIPPED — outVid reclaimed by a newer call since capture (gen now ${outVid._gen}, captured ${outVidGenAtCapture})`)
+          return
+        }
         outWrap.style.zIndex = '1'
         outWrap.style.opacity = '0'
         outVid.pause()
         outVid.srcObject = null
         outVid.src = ''
+        outVid._playable = false
       }, dissolve * 1000)
       if (looping) scheduleLoopDissolve(inVid, src, dissolve)
     }
@@ -123,8 +170,13 @@ function crossfadeTo(src, dissolve, looping, colorSettings) {
     }
     outVid.addEventListener('playing', onOutPlaying)
     outVid.src = src
+    outVid._playable = true
     outVid.muted = true
-    outVid.play().catch(() => { outPlaying = true; tryStart() })
+    console.log(`[scene-change] first-play — outVid.src assigned — requested="${src}" readBack="${outVid.src}"`)
+    outVid.play().then(
+      () => console.log(`[scene-change] first-play outVid.play() resolved — src="${outVid.src}"`),
+      e => { console.warn(`[scene-change] first-play outVid.play() rejected — src="${outVid.src}" — ${e.name}: ${e.message}`); outPlaying = true; tryStart() }
+    )
   } else {
     inVid.onloadeddata = startFade
   }
@@ -155,7 +207,7 @@ function scheduleLoopDissolve(vid, src, dissolve) {
 // Crossfade to a still image — same opacity blend, but it HOLDS (no loop, no timer).
 function crossfadeToStill(src, dissolve, colorSettings) {
   const { wrap: inWrap, img: inImg } = getInactive()
-  const { wrap: outWrap } = getActive()
+  const { wrap: outWrap, vid: outVid } = getActive()
   inWrap.style.filter = colorSettings
     ? makeFilter(colorSettings.brightness, colorSettings.contrast, colorSettings.hue, colorSettings.saturation)
     : ''
@@ -163,19 +215,30 @@ function crossfadeToStill(src, dissolve, colorSettings) {
   inWrap.style.zIndex = '2'
   outWrap.style.zIndex = '1'
   const start = () => {
+    console.log(`[scene-change] still startFade — inImg.src="${inImg.src}"`)
     active = active === 'a' ? 'b' : 'a'
     if (dissolve <= 0.1) { inWrap.style.opacity = '1'; outWrap.style.opacity = '0' }
     else fadeWrap(inWrap, 1, dissolve)
     setTimeout(() => {
+      // Fade-end compositing snapshot — mirrors the [fade-end] log in crossfadeTo.
+      // Before this, a still transition logged the initial command and nothing
+      // else, so a stuck/invisible handoff during a still-to-video (or
+      // video-to-still) transition left no way to tell what actually happened
+      // at completion. Added 2026-07-16.
+      console.log(`[fade-end] in(wrap=${inWrap.id} z=${inWrap.style.zIndex} opacity=${inWrap.style.opacity} img=${inImg.id}) out(wrap=${outWrap.id} z=${outWrap.style.zIndex} opacity=${outWrap.style.opacity} vid=${outVid.id} currentTime=${outVid.currentTime?.toFixed(2)})`)
       outWrap.style.opacity = '0'
       outWrap.style.zIndex = '1'
       const ov = outWrap.querySelector('video')
-      if (ov) { ov.pause(); ov.srcObject = null; ov.removeAttribute('src') }
+      if (ov) { ov.pause(); ov.srcObject = null; ov.removeAttribute('src'); ov._playable = false }
     }, dissolve * 1000)
   }
   inImg.onload = start
-  inImg.onerror = start   // still reveal the wrap even if the image hiccups
+  inImg.onerror = () => {
+    console.warn(`[scene-change] inImg load error — src="${inImg.src}"`)
+    start()   // still reveal the wrap even if the image hiccups
+  }
   inImg.src = src
+  console.log(`[scene-change] inImg.src assigned — requested="${src}" readBack="${inImg.src}"`)
 }
 
 // No external display notice
@@ -183,11 +246,15 @@ window.showrunner.onNoExternalDisplay(() => {
   document.getElementById('no-display-notice').style.display = 'block'
 })
 
-// Main-process heartbeat — resumes video if macOS suspended it
+// Main-process heartbeat — resumes video if macOS suspended it. Gated on
+// _playable rather than v.src — confirmed 2026-07-15 that v.src alone isn't a
+// reliable "does this element hold real content" check (it was making this
+// handler attempt play() on freshly-cleaned-up elements from crossfadeTo's
+// fade-end cleanup, producing a cosmetic NotSupportedError every time).
 window.showrunner.onKeepAlive(() => {
   [vidA, vidB].forEach(v => {
-    if (v.src && v.paused && !v.ended) {
-      v.play().catch(e => console.warn('keep-alive resume:', e))
+    if (v._playable && v.paused && !v.ended) {
+      v.play().catch(e => console.warn(`keep-alive resume: ${e.name} — ${e.message}`))
     }
   })
 })
@@ -195,16 +262,19 @@ window.showrunner.onKeepAlive(() => {
 window.showrunner.onLedCommand(({ type, src, dissolve, loop, brightness, contrast, hue, saturation, enabled }) => {
   const d = dissolve || 1
   if (type === 'play') {
+    console.log(`[scene-change] play command received — src="${src}" dissolve=${d} loop=${loop}`)
     const colorSettings = (brightness != null || contrast != null || hue != null || saturation != null)
       ? { brightness, contrast, hue, saturation } : null
     crossfadeTo(src, d, loop || false, colorSettings)
   }
   if (type === 'still') {
+    console.log(`[scene-change] still command received — src="${src}" dissolve=${d}`)
     const colorSettings = (brightness != null || contrast != null || hue != null || saturation != null)
       ? { brightness, contrast, hue, saturation } : null
     crossfadeToStill(src, d, colorSettings)
   }
   if (type === 'black') {
+    console.log(`[scene-change] black command received — dissolve=${d}`)
     vidA.ontimeupdate = null
     vidB.ontimeupdate = null
     fadeWrap(wrapA, 0, d)

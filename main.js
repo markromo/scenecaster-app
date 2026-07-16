@@ -592,6 +592,11 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+// Timestamp prefix for [display]/[renderer-health]/[renderer:*] log lines —
+// added 2026-07-14 so log events can be correlated against what's actually
+// observed during a live test, instead of just their relative order.
+function ts() { return new Date().toISOString() }
+
 // Recovers the LED window if its renderer hangs or dies without any actual
 // display reconfiguration happening — distinct failure class from the
 // screen.on(...) handling in createWindows(), which only fires when macOS
@@ -606,11 +611,11 @@ function attachLedWindowHealthMonitoring(win) {
   let unresponsiveRecoveryTimer = null
 
   win.webContents.on('unresponsive', () => {
-    console.log('[renderer-health] LED window unresponsive — will recreate in 3s unless it recovers on its own')
+    console.log(`[${ts()}] [renderer-health] LED window unresponsive — will recreate in 3s unless it recovers on its own`)
     if (unresponsiveRecoveryTimer) clearTimeout(unresponsiveRecoveryTimer)
     unresponsiveRecoveryTimer = setTimeout(() => {
       unresponsiveRecoveryTimer = null
-      console.log('[renderer-health] LED window still unresponsive after grace period — recreating')
+      console.log(`[${ts()}] [renderer-health] LED window still unresponsive after grace period — recreating`)
       if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
       createLedWindow()
     }, 3000)
@@ -618,17 +623,40 @@ function attachLedWindowHealthMonitoring(win) {
 
   win.webContents.on('responsive', () => {
     if (unresponsiveRecoveryTimer) {
-      console.log('[renderer-health] LED window recovered on its own — cancelling scheduled recreate')
+      console.log(`[${ts()}] [renderer-health] LED window recovered on its own — cancelling scheduled recreate`)
       clearTimeout(unresponsiveRecoveryTimer)
       unresponsiveRecoveryTimer = null
     }
   })
 
   win.webContents.on('render-process-gone', (event, details) => {
-    console.log('[renderer-health] LED window render process gone:', details)
+    console.log(`[${ts()}] [renderer-health] LED window render process gone:`, details)
     if (unresponsiveRecoveryTimer) { clearTimeout(unresponsiveRecoveryTimer); unresponsiveRecoveryTimer = null }
     if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
     createLedWindow()
+  })
+}
+
+// Forwards a window's renderer console output into main-process console.log,
+// prefixed so it lands in the same Terminal-redirect capture
+// (`SceneCaster > log.txt 2>&1`) used to diagnose [display]/[renderer-health]
+// issues — those specific prefixes are logged from main.js itself so they're
+// already visible that way, but genuine renderer-side output (uncaught JS
+// errors, video element failures in led.html, etc.) previously wasn't
+// captured at all without opening dev tools, which isn't available in a
+// packaged build. Added 2026-07-14 to close that gap ahead of investigating
+// the queue-add display-drop reports.
+function attachConsoleForwarding(win, label) {
+  // This Electron build (29.4.6) emits console-message with the OLD positional
+  // signature (event, level, message, line, sourceId), not the newer single
+  // messageDetails-object signature electron.d.ts in this same node_modules
+  // describes — confirmed by directly instrumenting a real console-message
+  // listener and inspecting the raw arguments at runtime (the .d.ts alone was
+  // misleading here). Do not "fix" this back to the object style without
+  // re-verifying against actual runtime args first.
+  win.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    const levelName = ['verbose', 'info', 'warning', 'error'][level] || 'log'
+    console.log(`[${ts()}] [renderer:${label}] [${levelName}] ${message}`)
   })
 }
 
@@ -648,6 +676,7 @@ function createLedWindow() {
     ledWindow.loadFile(path.join(__dirname, 'renderer', 'led.html'))
     ledWindow.setAlwaysOnTop(true, 'screen-saver')
     attachLedWindowHealthMonitoring(ledWindow)
+    attachConsoleForwarding(ledWindow, 'led')
     ledWindow.webContents.once('did-finish-load', () => {
       // Delay gives macOS time to settle the window on the external display before
       // requesting fullscreen — improves reliability across different display setups
@@ -667,6 +696,7 @@ function createLedWindow() {
     })
     ledWindow.loadFile(path.join(__dirname, 'renderer', 'led.html'))
     attachLedWindowHealthMonitoring(ledWindow)
+    attachConsoleForwarding(ledWindow, 'led')
     ledWindow.webContents.once('did-finish-load', () => {
       ledWindow.webContents.send('no-external-display')
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -693,6 +723,7 @@ function createWindows() {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), nodeIntegration: false, contextIsolation: true, webSecurity: false, backgroundThrottling: false }
   })
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+  attachConsoleForwarding(mainWindow, 'main')
 
   // Auto-open the fullscreen LED output window ONLY in the packaged (customer)
   // app. In dev (npm start) skip it: a frameless, always-on-top, fullscreen
@@ -711,10 +742,27 @@ function createWindows() {
     // (e.g. a display settling right as the app launches), and without this,
     // two of them could each schedule their own createLedWindow() and end up
     // with two overlapping LED windows instead of one clean recreation.
+    // Returns a stable string keyed on each display's id + bounds/resolution
+    // only (deliberately excludes workArea) — entering/exiting fullscreen on
+    // a display changes its workArea (menu bar/dock hide) without changing
+    // its actual bounds or resolution, and that workArea-only change is
+    // exactly what was causing display-metrics-changed to re-fire from our
+    // own LED window's setFullScreen(true) call, producing an infinite
+    // refresh loop (found 2026-07-14). Comparing against this signature lets
+    // us tell a genuine external metrics change apart from one our own
+    // refresh just caused.
+    function getDisplaySignature() {
+      return screen.getAllDisplays()
+        .map(d => `${d.id}:${d.bounds.x},${d.bounds.y},${d.bounds.width},${d.bounds.height}`)
+        .sort()
+        .join('|')
+    }
+    let lastDisplaySignature = getDisplaySignature()
+
     const DISPLAY_SETTLE_DELAY_MS = 500
     let ledWindowRefreshTimer = null
     function scheduleLedWindowRefresh(reason) {
-      console.log(`[display] ${reason} — scheduling LED window refresh in ${DISPLAY_SETTLE_DELAY_MS}ms. Displays:`, screen.getAllDisplays().map(d => ({ id: d.id, bounds: d.bounds })))
+      console.log(`[${ts()}] [display] ${reason} — scheduling LED window refresh in ${DISPLAY_SETTLE_DELAY_MS}ms. Displays:`, screen.getAllDisplays().map(d => ({ id: d.id, bounds: d.bounds })))
       if (ledWindowRefreshTimer) clearTimeout(ledWindowRefreshTimer)
       ledWindowRefreshTimer = setTimeout(() => {
         ledWindowRefreshTimer = null
@@ -731,7 +779,8 @@ function createWindows() {
 
     // A genuinely new display being plugged in.
     screen.on('display-added', (event, newDisplay) => {
-      console.log('[display] display-added event:', { id: newDisplay.id, bounds: newDisplay.bounds })
+      console.log(`[${ts()}] [display] display-added event:`, { id: newDisplay.id, bounds: newDisplay.bounds })
+      lastDisplaySignature = getDisplaySignature()
       scheduleLedWindowRefresh('display-added')
     })
 
@@ -741,15 +790,30 @@ function createWindows() {
     // in. Without this listener, the LED window could end up on stale bounds
     // (or never get created at all if it missed the startup window) with no
     // way to recover short of a real unplug/replug.
+    //
+    // Gated on an actual bounds/resolution diff (fixed 2026-07-14): this
+    // event also fires when nothing about the physical display setup
+    // changed — e.g. our own LED window's setFullScreen(true) call changes
+    // that display's workArea, which re-fires display-metrics-changed, which
+    // used to unconditionally schedule another refresh, which entered
+    // fullscreen again, ad infinitum (288 iterations observed in the field).
+    // Comparing real bounds/resolution against the last known signature
+    // breaks the loop while still catching genuine external changes.
     screen.on('display-metrics-changed', (event, display, changedMetrics) => {
-      console.log('[display] display-metrics-changed event:', { id: display.id, bounds: display.bounds, changedMetrics })
+      const newSignature = getDisplaySignature()
+      console.log(`[${ts()}] [display] display-metrics-changed event:`, { id: display.id, bounds: display.bounds, changedMetrics })
+      if (newSignature === lastDisplaySignature) {
+        console.log(`[${ts()}] [display] display-metrics-changed ignored — bounds/resolution unchanged since last known state (likely self-caused, e.g. fullscreen workArea change)`)
+        return
+      }
+      lastDisplaySignature = newSignature
       scheduleLedWindowRefresh('display-metrics-changed')
     })
 
     // Not a fix for this bug, but logging removal is cheap and closes a real
     // gap: previously nothing observed a display disconnecting at all.
     screen.on('display-removed', (event, oldDisplay) => {
-      console.log('[display] display-removed event:', { id: oldDisplay.id, bounds: oldDisplay.bounds })
+      console.log(`[${ts()}] [display] display-removed event:`, { id: oldDisplay.id, bounds: oldDisplay.bounds })
     })
   }
 

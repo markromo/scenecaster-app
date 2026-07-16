@@ -1126,18 +1126,27 @@ function advanceBackdrop() {
 function playCurrentBackdrop() {
   if (state.backdropIndex < 0 || !state.allScenes.length) return
   const scene = state.allScenes[state.backdropIndex]
-  if (!scene) return
+  if (!scene) { console.warn(`[scene-change] playCurrentBackdrop: no scene at backdropIndex=${state.backdropIndex}`); return }
+  console.log(`[scene-change] requested: index=${state.backdropIndex} name="${scene.name}" kind=${scene.kind || 'master'} video_file=${scene.video_file || '(none)'} isStill=${!!scene.isStill}`)
   // Per-scene dissolve length overrides the global default for the transition
   // INTO this scene; falls back to the global slider when not set.
   const dissolve = scene.dissolveOverride != null ? scene.dissolveOverride : state.dissolveTime
   // Blackout entries have no video — advancing onto one goes to black.
   if (scene.kind === 'blackout') {
+    console.log('[scene-change] blackout entry — sending black command')
     const cmd = { type: 'black', dissolve }
     window.showrunner.sendToLed(cmd); previewCommand(cmd)
     return
   }
+  // No pushLive here — the play/still command sent below already carries this
+  // scene's color settings (`cc`, spread into the command). Pushing live here
+  // too would apply the INCOMING scene's color to the currently-active wrap,
+  // which is still showing the OUTGOING scene on screen (see loadColorForScene).
   loadColorForScene(state.backdropIndex)
-  if (!scene.video_file) return
+  if (!scene.video_file) {
+    console.warn(`[scene-change] scene "${scene.name}" has no video_file — NOT sending any command to LED window, output stays on previous scene`)
+    return
+  }
   const filePath = `${state.folderPath}/${scene.video_file}`
   const cc = getColorForScene(state.backdropIndex)
   // Customer-uploaded filenames can contain # or ? (unlike our own show videos,
@@ -1145,6 +1154,7 @@ function playCurrentBackdrop() {
   // plain file://${filePath} string silently fails to load. toFileUrl() encodes
   // the path correctly.
   const ledSrc = window.showrunner.toFileUrl(filePath)
+  console.log(`[scene-change] computed ledSrc="${ledSrc}" (filePath="${filePath}")`)
   const previewSrc = state.mediaPort
     ? `http://127.0.0.1:${state.mediaPort}/${encodeURIComponent(scene.video_file)}`
     : ledSrc
@@ -1229,6 +1239,7 @@ el.btnB.addEventListener('click', advanceBackdrop)
 el.btnL.addEventListener('click', advanceLighting)
 el.btnLBack.addEventListener('click', backLighting)
 el.btnBlack.addEventListener('click', () => {
+  console.log('[scene-change] Blackout triggered (button or spacebar) — sending black command')
   const cmd = { type: 'black', dissolve: state.dissolveTime }
   window.showrunner.sendToLed(cmd); previewCommand(cmd)
 })
@@ -1482,7 +1493,17 @@ function updateColorIndicator() {
   el.btnColorToggle.classList.toggle('has-color', isColorModified(s))
 }
 
-function loadColorForScene(index) {
+// pushLive controls whether this also broadcasts a 'color' command to the LED
+// window. That command applies to whatever wrap is CURRENTLY ACTIVE (the
+// on-screen output) — correct when the caller is adjusting color on the scene
+// that's already playing (slider drag, color reset), but wrong during a scene
+// transition: playCurrentBackdrop() calls this for the INCOMING scene before
+// the crossfade has happened, so a live push here would stamp the incoming
+// scene's color onto the still-visible outgoing frame. Root cause of a
+// reproducible flash-on-entry/hold-on-exit color bug (found 2026-07-16) —
+// crossfadeTo/crossfadeToStill already carry the correct color settings with
+// the play/still command itself, so no separate push is needed on transition.
+function loadColorForScene(index, { pushLive = false } = {}) {
   const s = getColorForScene(index)
   el.ccBrightness.value = s.brightness
   el.ccContrast.value = s.contrast
@@ -1490,7 +1511,7 @@ function loadColorForScene(index) {
   el.ccSaturation.value = s.saturation
   updateColorLabels(s)
   updateColorIndicator()
-  sendColorToLed(s)
+  if (pushLive) sendColorToLed(s)
 }
 
 let colorSaveTimer = null
@@ -1534,7 +1555,9 @@ document.getElementById('cc-reset').addEventListener('click', () => {
     if (scene.instanceId) delete state.colorSettings[scene.instanceId]
     if (scene.video_file) delete state.colorSettings[scene.video_file] // clear any legacy filename-keyed entry too
   }
-  loadColorForScene(state.backdropIndex)
+  // pushLive: true — this scene is the one currently on screen (not mid-transition),
+  // so applying the reset color live to the active wrap is correct here.
+  loadColorForScene(state.backdropIndex, { pushLive: true })
   updateColorIndicator()
   saveColorSettingsToDisk()
 })
