@@ -84,11 +84,27 @@ const previewMissingEl = document.getElementById('preview-missing')
 function fileLabelFromSrc(src) {
   try { return decodeURIComponent(src).split('/').pop().split('?')[0] } catch { return 'this file' }
 }
-function showPreviewMissing(src) {
+// Logged here (not at each call site) so every caller gets it automatically —
+// this banner previously had zero console output anywhere, which meant a
+// real customer-visible failure left no trace: `grep "not found"` on a
+// captured log would find nothing even though the operator saw the warning
+// on screen. `detail` carries the underlying element's error code/message
+// when the caller has one (a <video>'s MediaError), for still images (no
+// such error object) it's omitted. Added 2026-07-16.
+function showPreviewMissing(src, detail) {
+  console.warn(`[preview] Video file not found — src="${src}"${detail ? ` (${detail})` : ''}`)
   previewMissingEl.textContent = `⚠ Video file not found: ${fileLabelFromSrc(src)}`
   previewMissingEl.classList.remove('hidden')
 }
-function hidePreviewMissing() { previewMissingEl.classList.add('hidden') }
+function hidePreviewMissing() {
+  // Only log a "cleared" line if the banner was actually showing — this also
+  // gets called unconditionally on every normal scene start, and logging
+  // every one of those would just be noise.
+  if (!previewMissingEl.classList.contains('hidden')) {
+    console.log(`[preview] missing-file banner cleared (was: "${previewMissingEl.textContent}")`)
+  }
+  previewMissingEl.classList.add('hidden')
+}
 let prevTop = prevA
 let prevBot = prevB
 let previewHasStartedOnce = false  // true once the first preview video has actually begun playing
@@ -120,7 +136,10 @@ function previewHideStill(dissolve) {
 function previewCrossfadeTo(src, dissolve, looping, colorSettings) {
   prevBot.ontimeupdate = null
   prevTop.ontimeupdate = null
-  prevBot.onerror = () => showPreviewMissing(src)  // 0-byte/missing file — surface it, don't just freeze silently
+  // 0-byte/missing file — surface it, don't just freeze silently. prevBot.error
+  // is a MediaError (code/message) when the browser attaches one; not every
+  // failure does, so this is included only when present.
+  prevBot.onerror = () => showPreviewMissing(src, prevBot.error ? `code=${prevBot.error.code} message=${prevBot.error.message || '(none)'}` : undefined)
   prevBot.src = src
   // Apply new scene's color to incoming video — prevTop keeps its own filter throughout
   prevBot.style.filter = colorSettings ? makeColorFilter(colorSettings) : 'none'

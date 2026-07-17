@@ -275,8 +275,22 @@ window.showrunner.onLedCommand(({ type, src, dissolve, loop, brightness, contras
   }
   if (type === 'black') {
     console.log(`[scene-change] black command received — dissolve=${d}`)
-    vidA.ontimeupdate = null
-    vidB.ontimeupdate = null
+    // Fully halt both videos, not just clear their pre-end loop trigger. A
+    // blackout can be held indefinitely, but this previously only cleared
+    // ontimeupdate — it never paused playback or cleared onended, so
+    // whichever video was active kept decoding invisibly behind the black,
+    // and once it reached its real duration, its own loop-restart fallback
+    // (onended, in scheduleLoopDissolve) would silently crossfade it back
+    // into view: a held blackout un-blacking itself with nobody having
+    // pressed anything. Root-caused 2026-07-16 from a real stress-test
+    // report (though that specific report turned out to have a different
+    // cause — a corrupted downloaded file — this is a separate, real defect
+    // found during the same investigation). _playable is also cleared, not
+    // just paused — otherwise the keep-alive heartbeat (which resumes
+    // anything marked playable-but-paused) would undo the pause on its very
+    // next tick.
+    vidA.ontimeupdate = null; vidA.onended = null; vidA.pause(); vidA._playable = false
+    vidB.ontimeupdate = null; vidB.onended = null; vidB.pause(); vidB._playable = false
     fadeWrap(wrapA, 0, d)
     fadeWrap(wrapB, 0, d)
   }

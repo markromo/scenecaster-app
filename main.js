@@ -441,9 +441,25 @@ function registerIPC() {
     ensureDirs()
     const url = `https://drive.usercontent.google.com/download?id=${fileId}&export=download&authuser=0&confirm=t`
     const destPath = path.join(VIDEOS_DIR, filename)
+    // Real scene videos run ~100-300MB. Confirmed 2026-07-16: under a per-file
+    // Google Drive download quota, Drive can serve a ~2KB HTML "too many users
+    // have viewed or downloaded this file recently" page with an HTTP 200
+    // status — response.ok alone doesn't catch that. This previously returned
+    // {success:true} unconditionally, silently writing that HTML page to disk
+    // with a .mp4 extension and counting it as downloaded; the corruption only
+    // surfaced later as an unrecoverable demuxer error at playback, which
+    // looked like a display/blackout bug rather than the corrupt-source-data
+    // problem it actually was.
+    const MIN_VALID_VIDEO_BYTES = 1024 * 1024 // 1MB — comfortably below any real scene, comfortably above a Drive error page
     try {
       const response = await fetch(url)
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      if (!response.ok) throw new Error(`Google Drive returned HTTP ${response.status}`)
+
+      const contentType = (response.headers.get('content-type') || '').toLowerCase()
+      if (contentType.includes('text/html')) {
+        throw new Error(`Google Drive returned an error page instead of the video (likely a temporary per-file download limit) — try again in a few minutes.`)
+      }
+
       const total = parseInt(response.headers.get('content-length') || '0', 10)
       let downloaded = 0
       const writer = fs.createWriteStream(destPath)
@@ -460,8 +476,22 @@ function registerIPC() {
         }
       }
       await new Promise(resolve => writer.end(resolve))
+
+      // Validate what actually landed on disk, not just the response headers —
+      // catches an error page served with a misleading content-type, a
+      // truncated stream, or any other corrupt/incomplete download the checks
+      // above could still miss.
+      const { size } = fs.statSync(destPath)
+      if (size < MIN_VALID_VIDEO_BYTES) {
+        throw new Error(`Downloaded file is only ${size} bytes — too small to be a real video. This usually means Google Drive served an error page (e.g. a temporary per-file download limit) instead of the actual file — try again in a few minutes.`)
+      }
+      if (total > 0 && downloaded < total) {
+        throw new Error(`Download was incomplete (got ${downloaded} of ${total} bytes) — try again.`)
+      }
+
       return { success: true }
     } catch (e) {
+      console.error(`[download] "${filename}" failed validation: ${e.message}`)
       try { fs.unlinkSync(destPath) } catch {}
       return { success: false, error: e.message }
     }
