@@ -1,6 +1,6 @@
 {
   "name": "scenecaster",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "SceneCaster by e-llusion media",
   "main": "main.js",
   "engines": {
@@ -25,6 +25,7 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
+      "artifactName": "SceneCaster-universal.${ext}",
       "target": [
         {
           "target": "dmg",
@@ -35,6 +36,7 @@
       ]
     },
     "win": {
+      "artifactName": "SceneCaster-Setup.${ext}",
       "target": [
         {
           "target": "nsis",

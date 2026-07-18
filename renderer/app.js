@@ -326,14 +326,18 @@ async function checkAndDownload(payload, daysRemaining) {
     return
   }
 
-  // Build the list of files needed for this license
+  // Build the list of files needed for this license. sceneKey is the
+  // manifest.files key itself (e.g. "Frozen_Elsa_Bedroom") — that's what the
+  // backend's /download-url endpoint expects to resolve a scene's R2 object.
   const neededMap = new Map()
   for (const id of packIds) {
     if (manifest.packs?.[id]) {
-      manifest.packs[id].map(fileKey => manifest.files[fileKey]).filter(Boolean)
-        .forEach(f => neededMap.set(f.filename, f))
+      manifest.packs[id].forEach(fileKey => {
+        const f = manifest.files[fileKey]
+        if (f) neededMap.set(f.filename, { sceneKey: fileKey, filename: f.filename })
+      })
     } else if (manifest.files?.[id]) {
-      neededMap.set(manifest.files[id].filename, manifest.files[id])
+      neededMap.set(manifest.files[id].filename, { sceneKey: id, filename: manifest.files[id].filename })
     }
   }
   const needed = Array.from(neededMap.values())
@@ -393,7 +397,7 @@ document.getElementById('btn-start-download').addEventListener('click', async ()
     document.getElementById('dl-current-file').textContent = `Downloading: ${file.filename}`
     document.getElementById('dl-count').textContent = `${completed + 1} of ${total}`
 
-    const result = await window.showrunner.downloadFile({ fileId: file.fileId, filename: file.filename })
+    const result = await window.showrunner.downloadFile({ sceneKey: file.sceneKey, filename: file.filename })
 
     if (!result.success) {
       const errEl = document.getElementById('dl-error')

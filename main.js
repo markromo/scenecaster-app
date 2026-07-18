@@ -437,27 +437,50 @@ function registerIPC() {
     return { videosDir: VIDEOS_DIR, existing }
   })
 
-  ipcMain.handle('download-file', async (event, { fileId, filename }) => {
+  ipcMain.handle('download-file', async (event, { sceneKey, filename }) => {
     ensureDirs()
-    const url = `https://drive.usercontent.google.com/download?id=${fileId}&export=download&authuser=0&confirm=t`
     const destPath = path.join(VIDEOS_DIR, filename)
-    // Real scene videos run ~100-300MB. Confirmed 2026-07-16: under a per-file
-    // Google Drive download quota, Drive can serve a ~2KB HTML "too many users
-    // have viewed or downloaded this file recently" page with an HTTP 200
-    // status — response.ok alone doesn't catch that. This previously returned
-    // {success:true} unconditionally, silently writing that HTML page to disk
-    // with a .mp4 extension and counting it as downloaded; the corruption only
-    // surfaced later as an unrecoverable demuxer error at playback, which
-    // looked like a display/blackout bug rather than the corrupt-source-data
-    // problem it actually was.
-    const MIN_VALID_VIDEO_BYTES = 1024 * 1024 // 1MB — comfortably below any real scene, comfortably above a Drive error page
+    // Real scene videos run ~100-300MB. This validation (min-size + declared
+    // content-length match, delete-partial-on-failure, never count a bad
+    // download as successful) was added 2026-07-16 back when videos came
+    // straight from Google Drive, which could silently serve a ~2KB HTML
+    // quota-exceeded page with an HTTP 200 status — response.ok alone didn't
+    // catch that, and the corruption only surfaced later as an unrecoverable
+    // demuxer error at playback. R2 (the current source, via a signed URL
+    // minted per-request below) won't produce that specific error page, but
+    // the same checks are still real protection against a truncated or
+    // otherwise corrupt download, so they carry over unchanged.
+    const MIN_VALID_VIDEO_BYTES = 1024 * 1024 // 1MB — comfortably below any real scene
+
+    let url
+    try {
+      // The license token already lives on disk for checkLicense() — no need
+      // for the renderer to hand it back to us.
+      if (!fs.existsSync(LICENSE_FILE)) throw new Error('No license found.')
+      const { token } = JSON.parse(fs.readFileSync(LICENSE_FILE, 'utf8'))
+
+      const urlResp = await fetch(`${BACKEND_URL}/download-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, sceneKey })
+      })
+      const urlData = await urlResp.json()
+      if (!urlResp.ok) throw new Error(urlData.error || `Could not get download URL (HTTP ${urlResp.status})`)
+      url = urlData.url
+    } catch (e) {
+      console.error(`[download] "${filename}" failed to get a download URL: ${e.message}`)
+      return { success: false, error: e.message }
+    }
+
     try {
       const response = await fetch(url)
-      if (!response.ok) throw new Error(`Google Drive returned HTTP ${response.status}`)
+      if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`)
 
+      // R2 won't serve an HTML quota page the way Drive did, but this check
+      // is a harmless no-op safety net against a truncated/misrouted response.
       const contentType = (response.headers.get('content-type') || '').toLowerCase()
       if (contentType.includes('text/html')) {
-        throw new Error(`Google Drive returned an error page instead of the video (likely a temporary per-file download limit) — try again in a few minutes.`)
+        throw new Error(`Server returned an error page instead of the video — try again in a few minutes.`)
       }
 
       const total = parseInt(response.headers.get('content-length') || '0', 10)
@@ -483,7 +506,7 @@ function registerIPC() {
       // above could still miss.
       const { size } = fs.statSync(destPath)
       if (size < MIN_VALID_VIDEO_BYTES) {
-        throw new Error(`Downloaded file is only ${size} bytes — too small to be a real video. This usually means Google Drive served an error page (e.g. a temporary per-file download limit) instead of the actual file — try again in a few minutes.`)
+        throw new Error(`Downloaded file is only ${size} bytes — too small to be a real video. Try again in a few minutes.`)
       }
       if (total > 0 && downloaded < total) {
         throw new Error(`Download was incomplete (got ${downloaded} of ${total} bytes) — try again.`)
