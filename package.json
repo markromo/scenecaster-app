@@ -37,6 +37,8 @@
     },
     "win": {
       "artifactName": "SceneCaster-Setup.${ext}",
+      "sign": "scripts/sign-windows.js",
+      "signingHashAlgorithms": ["sha256"],
       "target": [
         {
           "target": "nsis",
