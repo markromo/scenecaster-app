@@ -281,6 +281,16 @@ function registerIPC() {
   ipcMain.on('to-file-url-sync', (event, filePath) => {
     event.returnValue = pathToFileURL(filePath).href
   })
+  // STRESS-TEST DEBUG — SCENECASTER_STRESS_TEST — remove before customer build.
+  // Same sandboxed-preload issue as to-file-url-sync above: preload.js can't
+  // reliably read process.env directly (confirmed live 2026-07-17 — every
+  // [stress-test] log line and every F13/F14/F15 shortcut silently never
+  // fired, despite the env var being set correctly on the spawned process,
+  // because the sandboxed preload's process.env doesn't carry it through).
+  // Routed through main, which does have the real env, same as the URL helper.
+  ipcMain.on('get-stress-test-mode-sync', (event) => {
+    event.returnValue = process.env.SCENECASTER_STRESS_TEST === '1'
+  })
   ipcMain.handle('check-license', () => checkLicense())
   ipcMain.handle('activate-license', (_, token) => activateLicense(token))
   ipcMain.handle('finalize-license', (_, opts) => finalizeLicense(opts))

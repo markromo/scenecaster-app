@@ -1,0 +1,13 @@
+{
+  "name": "scenecaster-stress-test",
+  "private": true,
+  "description": "Temporary local-only stress-test harness for the LED display-freeze bug. Not part of the shipped app (excluded from packaging by the app's own build.files whitelist). Delete this whole directory before any customer build audit.",
+  "scripts": {
+    "calibrate": "node calibrate.js",
+    "run-all": "bash run-all.sh"
+  },
+  "dependencies": {
+    "pixelmatch": "^5.3.0",
+    "pngjs": "^7.0.0"
+  }
+}

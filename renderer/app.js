@@ -1151,12 +1151,18 @@ function playCurrentBackdrop() {
   const scene = state.allScenes[state.backdropIndex]
   if (!scene) { console.warn(`[scene-change] playCurrentBackdrop: no scene at backdropIndex=${state.backdropIndex}`); return }
   console.log(`[scene-change] requested: index=${state.backdropIndex} name="${scene.name}" kind=${scene.kind || 'master'} video_file=${scene.video_file || '(none)'} isStill=${!!scene.isStill}`)
+  // STRESS-TEST DEBUG — SCENECASTER_STRESS_TEST — remove before customer build
+  if (window.showrunner.stressTestMode) {
+    console.log(`[stress-test] index=${state.backdropIndex} total=${state.allScenes.length} sceneId=${scene.sceneRef?.sceneId || scene.sceneRef?.id || '(none)'} atLast=${state.backdropIndex >= state.allScenes.length - 1}`)
+  }
   // Per-scene dissolve length overrides the global default for the transition
   // INTO this scene; falls back to the global slider when not set.
   const dissolve = scene.dissolveOverride != null ? scene.dissolveOverride : state.dissolveTime
   // Blackout entries have no video — advancing onto one goes to black.
   if (scene.kind === 'blackout') {
     console.log('[scene-change] blackout entry — sending black command')
+    // STRESS-TEST DEBUG — SCENECASTER_STRESS_TEST — remove before customer build
+    if (window.showrunner.stressTestMode) console.log(`[stress-test] index=${state.backdropIndex} total=${state.allScenes.length} kind=blackout`)
     const cmd = { type: 'black', dissolve }
     window.showrunner.sendToLed(cmd); previewCommand(cmd)
     return
@@ -1168,6 +1174,8 @@ function playCurrentBackdrop() {
   loadColorForScene(state.backdropIndex)
   if (!scene.video_file) {
     console.warn(`[scene-change] scene "${scene.name}" has no video_file — NOT sending any command to LED window, output stays on previous scene`)
+    // STRESS-TEST DEBUG — SCENECASTER_STRESS_TEST — remove before customer build
+    if (window.showrunner.stressTestMode) console.log(`[stress-test] index=${state.backdropIndex} total=${state.allScenes.length} kind=no-video`)
     return
   }
   const filePath = `${state.folderPath}/${scene.video_file}`
@@ -1640,7 +1648,27 @@ document.addEventListener('keydown', e => {
     case 'KeyL': e.preventDefault(); advanceLighting(); break
     case 'Space': e.preventDefault(); el.btnBlack.click(); break
   }
+  // STRESS-TEST DEBUG — SCENECASTER_STRESS_TEST — remove before customer build
+  if (window.showrunner.stressTestMode) {
+    switch (e.code) {
+      case 'F13': e.preventDefault(); duplicateScene(state.backdropIndex); break
+      case 'F14': e.preventDefault(); insertBlackout(); break
+      case 'F15': e.preventDefault(); stressResetPosition(); break
+    }
+  }
 })
+
+// STRESS-TEST DEBUG — SCENECASTER_STRESS_TEST — remove before customer build
+// Resets in-memory playback position only (does NOT touch the custom-layout
+// overlay, so accumulated duplicates/blackouts from the run survive), then
+// reuses the real advanceBackdrop() so the LED window genuinely re-syncs to
+// scene 0 rather than the harness just assuming it did.
+function stressResetPosition() {
+  if (!state.allScenes.length) return
+  state.backdropIndex = -1; state.lightingIndex = -1; state.lightingSubIndex = 0
+  advanceBackdrop()
+  console.log('[stress-test] position reset to scene 0 (customizations preserved)')
+}
 
 // ── Re-enter license (from menu bar) ────────────────────────────────────────────
 window.showrunner.onShowActivate(() => {
