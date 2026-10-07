@@ -84,11 +84,27 @@ const previewMissingEl = document.getElementById('preview-missing')
 function fileLabelFromSrc(src) {
   try { return decodeURIComponent(src).split('/').pop().split('?')[0] } catch { return 'this file' }
 }
-function showPreviewMissing(src) {
+// Logged here (not at each call site) so every caller gets it automatically —
+// this banner previously had zero console output anywhere, which meant a
+// real customer-visible failure left no trace: `grep "not found"` on a
+// captured log would find nothing even though the operator saw the warning
+// on screen. `detail` carries the underlying element's error code/message
+// when the caller has one (a <video>'s MediaError), for still images (no
+// such error object) it's omitted. Added 2026-07-16.
+function showPreviewMissing(src, detail) {
+  console.warn(`[preview] Video file not found — src="${src}"${detail ? ` (${detail})` : ''}`)
   previewMissingEl.textContent = `⚠ Video file not found: ${fileLabelFromSrc(src)}`
   previewMissingEl.classList.remove('hidden')
 }
-function hidePreviewMissing() { previewMissingEl.classList.add('hidden') }
+function hidePreviewMissing() {
+  // Only log a "cleared" line if the banner was actually showing — this also
+  // gets called unconditionally on every normal scene start, and logging
+  // every one of those would just be noise.
+  if (!previewMissingEl.classList.contains('hidden')) {
+    console.log(`[preview] missing-file banner cleared (was: "${previewMissingEl.textContent}")`)
+  }
+  previewMissingEl.classList.add('hidden')
+}
 let prevTop = prevA
 let prevBot = prevB
 let previewHasStartedOnce = false  // true once the first preview video has actually begun playing
@@ -120,7 +136,10 @@ function previewHideStill(dissolve) {
 function previewCrossfadeTo(src, dissolve, looping, colorSettings) {
   prevBot.ontimeupdate = null
   prevTop.ontimeupdate = null
-  prevBot.onerror = () => showPreviewMissing(src)  // 0-byte/missing file — surface it, don't just freeze silently
+  // 0-byte/missing file — surface it, don't just freeze silently. prevBot.error
+  // is a MediaError (code/message) when the browser attaches one; not every
+  // failure does, so this is included only when present.
+  prevBot.onerror = () => showPreviewMissing(src, prevBot.error ? `code=${prevBot.error.code} message=${prevBot.error.message || '(none)'}` : undefined)
   prevBot.src = src
   // Apply new scene's color to incoming video — prevTop keeps its own filter throughout
   prevBot.style.filter = colorSettings ? makeColorFilter(colorSettings) : 'none'
@@ -307,14 +326,18 @@ async function checkAndDownload(payload, daysRemaining) {
     return
   }
 
-  // Build the list of files needed for this license
+  // Build the list of files needed for this license. sceneKey is the
+  // manifest.files key itself (e.g. "Frozen_Elsa_Bedroom") — that's what the
+  // backend's /download-url endpoint expects to resolve a scene's R2 object.
   const neededMap = new Map()
   for (const id of packIds) {
     if (manifest.packs?.[id]) {
-      manifest.packs[id].map(fileKey => manifest.files[fileKey]).filter(Boolean)
-        .forEach(f => neededMap.set(f.filename, f))
+      manifest.packs[id].forEach(fileKey => {
+        const f = manifest.files[fileKey]
+        if (f) neededMap.set(f.filename, { sceneKey: fileKey, filename: f.filename })
+      })
     } else if (manifest.files?.[id]) {
-      neededMap.set(manifest.files[id].filename, manifest.files[id])
+      neededMap.set(manifest.files[id].filename, { sceneKey: id, filename: manifest.files[id].filename })
     }
   }
   const needed = Array.from(neededMap.values())
@@ -374,7 +397,7 @@ document.getElementById('btn-start-download').addEventListener('click', async ()
     document.getElementById('dl-current-file').textContent = `Downloading: ${file.filename}`
     document.getElementById('dl-count').textContent = `${completed + 1} of ${total}`
 
-    const result = await window.showrunner.downloadFile({ fileId: file.fileId, filename: file.filename })
+    const result = await window.showrunner.downloadFile({ sceneKey: file.sceneKey, filename: file.filename })
 
     if (!result.success) {
       const errEl = document.getElementById('dl-error')
@@ -1126,18 +1149,35 @@ function advanceBackdrop() {
 function playCurrentBackdrop() {
   if (state.backdropIndex < 0 || !state.allScenes.length) return
   const scene = state.allScenes[state.backdropIndex]
-  if (!scene) return
+  if (!scene) { console.warn(`[scene-change] playCurrentBackdrop: no scene at backdropIndex=${state.backdropIndex}`); return }
+  console.log(`[scene-change] requested: index=${state.backdropIndex} name="${scene.name}" kind=${scene.kind || 'master'} video_file=${scene.video_file || '(none)'} isStill=${!!scene.isStill}`)
+  // STRESS-TEST DEBUG — SCENECASTER_STRESS_TEST — remove before customer build
+  if (window.showrunner.stressTestMode) {
+    console.log(`[stress-test] index=${state.backdropIndex} total=${state.allScenes.length} sceneId=${scene.sceneRef?.sceneId || scene.sceneRef?.id || '(none)'} atLast=${state.backdropIndex >= state.allScenes.length - 1}`)
+  }
   // Per-scene dissolve length overrides the global default for the transition
   // INTO this scene; falls back to the global slider when not set.
   const dissolve = scene.dissolveOverride != null ? scene.dissolveOverride : state.dissolveTime
   // Blackout entries have no video — advancing onto one goes to black.
   if (scene.kind === 'blackout') {
+    console.log('[scene-change] blackout entry — sending black command')
+    // STRESS-TEST DEBUG — SCENECASTER_STRESS_TEST — remove before customer build
+    if (window.showrunner.stressTestMode) console.log(`[stress-test] index=${state.backdropIndex} total=${state.allScenes.length} kind=blackout`)
     const cmd = { type: 'black', dissolve }
     window.showrunner.sendToLed(cmd); previewCommand(cmd)
     return
   }
+  // No pushLive here — the play/still command sent below already carries this
+  // scene's color settings (`cc`, spread into the command). Pushing live here
+  // too would apply the INCOMING scene's color to the currently-active wrap,
+  // which is still showing the OUTGOING scene on screen (see loadColorForScene).
   loadColorForScene(state.backdropIndex)
-  if (!scene.video_file) return
+  if (!scene.video_file) {
+    console.warn(`[scene-change] scene "${scene.name}" has no video_file — NOT sending any command to LED window, output stays on previous scene`)
+    // STRESS-TEST DEBUG — SCENECASTER_STRESS_TEST — remove before customer build
+    if (window.showrunner.stressTestMode) console.log(`[stress-test] index=${state.backdropIndex} total=${state.allScenes.length} kind=no-video`)
+    return
+  }
   const filePath = `${state.folderPath}/${scene.video_file}`
   const cc = getColorForScene(state.backdropIndex)
   // Customer-uploaded filenames can contain # or ? (unlike our own show videos,
@@ -1145,6 +1185,7 @@ function playCurrentBackdrop() {
   // plain file://${filePath} string silently fails to load. toFileUrl() encodes
   // the path correctly.
   const ledSrc = window.showrunner.toFileUrl(filePath)
+  console.log(`[scene-change] computed ledSrc="${ledSrc}" (filePath="${filePath}")`)
   const previewSrc = state.mediaPort
     ? `http://127.0.0.1:${state.mediaPort}/${encodeURIComponent(scene.video_file)}`
     : ledSrc
@@ -1229,6 +1270,7 @@ el.btnB.addEventListener('click', advanceBackdrop)
 el.btnL.addEventListener('click', advanceLighting)
 el.btnLBack.addEventListener('click', backLighting)
 el.btnBlack.addEventListener('click', () => {
+  console.log('[scene-change] Blackout triggered (button or spacebar) — sending black command')
   const cmd = { type: 'black', dissolve: state.dissolveTime }
   window.showrunner.sendToLed(cmd); previewCommand(cmd)
 })
@@ -1482,7 +1524,17 @@ function updateColorIndicator() {
   el.btnColorToggle.classList.toggle('has-color', isColorModified(s))
 }
 
-function loadColorForScene(index) {
+// pushLive controls whether this also broadcasts a 'color' command to the LED
+// window. That command applies to whatever wrap is CURRENTLY ACTIVE (the
+// on-screen output) — correct when the caller is adjusting color on the scene
+// that's already playing (slider drag, color reset), but wrong during a scene
+// transition: playCurrentBackdrop() calls this for the INCOMING scene before
+// the crossfade has happened, so a live push here would stamp the incoming
+// scene's color onto the still-visible outgoing frame. Root cause of a
+// reproducible flash-on-entry/hold-on-exit color bug (found 2026-07-16) —
+// crossfadeTo/crossfadeToStill already carry the correct color settings with
+// the play/still command itself, so no separate push is needed on transition.
+function loadColorForScene(index, { pushLive = false } = {}) {
   const s = getColorForScene(index)
   el.ccBrightness.value = s.brightness
   el.ccContrast.value = s.contrast
@@ -1490,7 +1542,7 @@ function loadColorForScene(index) {
   el.ccSaturation.value = s.saturation
   updateColorLabels(s)
   updateColorIndicator()
-  sendColorToLed(s)
+  if (pushLive) sendColorToLed(s)
 }
 
 let colorSaveTimer = null
@@ -1534,7 +1586,9 @@ document.getElementById('cc-reset').addEventListener('click', () => {
     if (scene.instanceId) delete state.colorSettings[scene.instanceId]
     if (scene.video_file) delete state.colorSettings[scene.video_file] // clear any legacy filename-keyed entry too
   }
-  loadColorForScene(state.backdropIndex)
+  // pushLive: true — this scene is the one currently on screen (not mid-transition),
+  // so applying the reset color live to the active wrap is correct here.
+  loadColorForScene(state.backdropIndex, { pushLive: true })
   updateColorIndicator()
   saveColorSettingsToDisk()
 })
@@ -1594,7 +1648,27 @@ document.addEventListener('keydown', e => {
     case 'KeyL': e.preventDefault(); advanceLighting(); break
     case 'Space': e.preventDefault(); el.btnBlack.click(); break
   }
+  // STRESS-TEST DEBUG — SCENECASTER_STRESS_TEST — remove before customer build
+  if (window.showrunner.stressTestMode) {
+    switch (e.code) {
+      case 'F13': e.preventDefault(); duplicateScene(state.backdropIndex); break
+      case 'F14': e.preventDefault(); insertBlackout(); break
+      case 'F15': e.preventDefault(); stressResetPosition(); break
+    }
+  }
 })
+
+// STRESS-TEST DEBUG — SCENECASTER_STRESS_TEST — remove before customer build
+// Resets in-memory playback position only (does NOT touch the custom-layout
+// overlay, so accumulated duplicates/blackouts from the run survive), then
+// reuses the real advanceBackdrop() so the LED window genuinely re-syncs to
+// scene 0 rather than the harness just assuming it did.
+function stressResetPosition() {
+  if (!state.allScenes.length) return
+  state.backdropIndex = -1; state.lightingIndex = -1; state.lightingSubIndex = 0
+  advanceBackdrop()
+  console.log('[stress-test] position reset to scene 0 (customizations preserved)')
+}
 
 // ── Re-enter license (from menu bar) ────────────────────────────────────────────
 window.showrunner.onShowActivate(() => {

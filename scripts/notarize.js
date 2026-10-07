@@ -37,7 +37,25 @@ exports.default = async function(context) {
   // Deliberately NOT using notarytool's own --wait here: a long-lived xcrun
   // process crashed with a Bus error mid-wait on this machine once already.
   // Submitting, then polling with short-lived `info` calls, has proven stable.
-  const submitOutput = execSync(`xcrun notarytool submit "${zipPath}" ${authArgs}`, { encoding: 'utf8' })
+  //
+  // Retry loop added 2026-07-16: `xcrun notarytool submit` itself crashes
+  // non-deterministically with EXC_BAD_ACCESS/SIGBUS inside Apple's own S3
+  // chunked-upload code (confirmed externally documented, not specific to
+  // this machine/network/file — see CLAUDE.md). The only known fix is
+  // brute-force retry; retrying just this call (rather than re-running the
+  // whole `npm run build:mac`) avoids redoing the zip/sign work on every crash.
+  const MAX_SUBMIT_ATTEMPTS = 10
+  let submitOutput = null
+  for (let attempt = 1; attempt <= MAX_SUBMIT_ATTEMPTS; attempt++) {
+    try {
+      submitOutput = execSync(`xcrun notarytool submit "${zipPath}" ${authArgs}`, { encoding: 'utf8' })
+      break
+    } catch (err) {
+      console.log(`  ⚠️  submit attempt ${attempt}/${MAX_SUBMIT_ATTEMPTS} failed (likely the known notarytool SIGBUS crash): ${err.message}`)
+      if (attempt === MAX_SUBMIT_ATTEMPTS) throw err
+      sleep(5000)
+    }
+  }
   console.log(submitOutput)
   const idMatch = submitOutput.match(/id:\s*([a-f0-9-]+)/i)
   if (!idMatch) throw new Error('Could not parse submission id from notarytool output')

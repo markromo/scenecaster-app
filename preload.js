@@ -44,4 +44,10 @@ contextBridge.exposeInMainWorld('showrunner', {
     ipcRenderer.removeAllListeners('download-progress')
     ipcRenderer.on('download-progress', (_, data) => cb(data))
   },
+  // STRESS-TEST DEBUG — SCENECASTER_STRESS_TEST — remove before customer build.
+  // NOT `process.env.SCENECASTER_STRESS_TEST === '1'` directly — confirmed live
+  // 2026-07-17 that the sandboxed preload's process.env doesn't reliably carry
+  // env vars set on the spawned main process, so that always evaluated false.
+  // Routed through main via sync IPC instead (same pattern as toFileUrl above).
+  stressTestMode: ipcRenderer.sendSync('get-stress-test-mode-sync'),
 })

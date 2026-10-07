@@ -281,6 +281,16 @@ function registerIPC() {
   ipcMain.on('to-file-url-sync', (event, filePath) => {
     event.returnValue = pathToFileURL(filePath).href
   })
+  // STRESS-TEST DEBUG — SCENECASTER_STRESS_TEST — remove before customer build.
+  // Same sandboxed-preload issue as to-file-url-sync above: preload.js can't
+  // reliably read process.env directly (confirmed live 2026-07-17 — every
+  // [stress-test] log line and every F13/F14/F15 shortcut silently never
+  // fired, despite the env var being set correctly on the spawned process,
+  // because the sandboxed preload's process.env doesn't carry it through).
+  // Routed through main, which does have the real env, same as the URL helper.
+  ipcMain.on('get-stress-test-mode-sync', (event) => {
+    event.returnValue = process.env.SCENECASTER_STRESS_TEST === '1'
+  })
   ipcMain.handle('check-license', () => checkLicense())
   ipcMain.handle('activate-license', (_, token) => activateLicense(token))
   ipcMain.handle('finalize-license', (_, opts) => finalizeLicense(opts))
@@ -437,13 +447,52 @@ function registerIPC() {
     return { videosDir: VIDEOS_DIR, existing }
   })
 
-  ipcMain.handle('download-file', async (event, { fileId, filename }) => {
+  ipcMain.handle('download-file', async (event, { sceneKey, filename }) => {
     ensureDirs()
-    const url = `https://drive.usercontent.google.com/download?id=${fileId}&export=download&authuser=0&confirm=t`
     const destPath = path.join(VIDEOS_DIR, filename)
+    // Real scene videos run ~100-300MB. This validation (min-size + declared
+    // content-length match, delete-partial-on-failure, never count a bad
+    // download as successful) was added 2026-07-16 back when videos came
+    // straight from Google Drive, which could silently serve a ~2KB HTML
+    // quota-exceeded page with an HTTP 200 status — response.ok alone didn't
+    // catch that, and the corruption only surfaced later as an unrecoverable
+    // demuxer error at playback. R2 (the current source, via a signed URL
+    // minted per-request below) won't produce that specific error page, but
+    // the same checks are still real protection against a truncated or
+    // otherwise corrupt download, so they carry over unchanged.
+    const MIN_VALID_VIDEO_BYTES = 1024 * 1024 // 1MB — comfortably below any real scene
+
+    let url
+    try {
+      // The license token already lives on disk for checkLicense() — no need
+      // for the renderer to hand it back to us.
+      if (!fs.existsSync(LICENSE_FILE)) throw new Error('No license found.')
+      const { token } = JSON.parse(fs.readFileSync(LICENSE_FILE, 'utf8'))
+
+      const urlResp = await fetch(`${BACKEND_URL}/download-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, sceneKey })
+      })
+      const urlData = await urlResp.json()
+      if (!urlResp.ok) throw new Error(urlData.error || `Could not get download URL (HTTP ${urlResp.status})`)
+      url = urlData.url
+    } catch (e) {
+      console.error(`[download] "${filename}" failed to get a download URL: ${e.message}`)
+      return { success: false, error: e.message }
+    }
+
     try {
       const response = await fetch(url)
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`)
+
+      // R2 won't serve an HTML quota page the way Drive did, but this check
+      // is a harmless no-op safety net against a truncated/misrouted response.
+      const contentType = (response.headers.get('content-type') || '').toLowerCase()
+      if (contentType.includes('text/html')) {
+        throw new Error(`Server returned an error page instead of the video — try again in a few minutes.`)
+      }
+
       const total = parseInt(response.headers.get('content-length') || '0', 10)
       let downloaded = 0
       const writer = fs.createWriteStream(destPath)
@@ -460,8 +509,22 @@ function registerIPC() {
         }
       }
       await new Promise(resolve => writer.end(resolve))
+
+      // Validate what actually landed on disk, not just the response headers —
+      // catches an error page served with a misleading content-type, a
+      // truncated stream, or any other corrupt/incomplete download the checks
+      // above could still miss.
+      const { size } = fs.statSync(destPath)
+      if (size < MIN_VALID_VIDEO_BYTES) {
+        throw new Error(`Downloaded file is only ${size} bytes — too small to be a real video. Try again in a few minutes.`)
+      }
+      if (total > 0 && downloaded < total) {
+        throw new Error(`Download was incomplete (got ${downloaded} of ${total} bytes) — try again.`)
+      }
+
       return { success: true }
     } catch (e) {
+      console.error(`[download] "${filename}" failed validation: ${e.message}`)
       try { fs.unlinkSync(destPath) } catch {}
       return { success: false, error: e.message }
     }
@@ -592,6 +655,74 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+// Timestamp prefix for [display]/[renderer-health]/[renderer:*] log lines —
+// added 2026-07-14 so log events can be correlated against what's actually
+// observed during a live test, instead of just their relative order.
+function ts() { return new Date().toISOString() }
+
+// Recovers the LED window if its renderer hangs or dies without any actual
+// display reconfiguration happening — distinct failure class from the
+// screen.on(...) handling in createWindows(), which only fires when macOS
+// reports the display setup itself changed. A frozen/crashed renderer fires
+// neither display-added nor display-metrics-changed, since nothing about the
+// display changed — only the window's content did. The existing keep-alive
+// heartbeat only tries to prevent renderer suspension proactively; this is
+// the fallback for when it happens anyway. Logged with a distinct
+// [renderer-health] prefix (vs. [display]) so a future report's console
+// output makes it unambiguous which mechanism actually fired.
+function attachLedWindowHealthMonitoring(win) {
+  let unresponsiveRecoveryTimer = null
+
+  win.webContents.on('unresponsive', () => {
+    console.log(`[${ts()}] [renderer-health] LED window unresponsive — will recreate in 3s unless it recovers on its own`)
+    if (unresponsiveRecoveryTimer) clearTimeout(unresponsiveRecoveryTimer)
+    unresponsiveRecoveryTimer = setTimeout(() => {
+      unresponsiveRecoveryTimer = null
+      console.log(`[${ts()}] [renderer-health] LED window still unresponsive after grace period — recreating`)
+      if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
+      createLedWindow()
+    }, 3000)
+  })
+
+  win.webContents.on('responsive', () => {
+    if (unresponsiveRecoveryTimer) {
+      console.log(`[${ts()}] [renderer-health] LED window recovered on its own — cancelling scheduled recreate`)
+      clearTimeout(unresponsiveRecoveryTimer)
+      unresponsiveRecoveryTimer = null
+    }
+  })
+
+  win.webContents.on('render-process-gone', (event, details) => {
+    console.log(`[${ts()}] [renderer-health] LED window render process gone:`, details)
+    if (unresponsiveRecoveryTimer) { clearTimeout(unresponsiveRecoveryTimer); unresponsiveRecoveryTimer = null }
+    if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
+    createLedWindow()
+  })
+}
+
+// Forwards a window's renderer console output into main-process console.log,
+// prefixed so it lands in the same Terminal-redirect capture
+// (`SceneCaster > log.txt 2>&1`) used to diagnose [display]/[renderer-health]
+// issues — those specific prefixes are logged from main.js itself so they're
+// already visible that way, but genuine renderer-side output (uncaught JS
+// errors, video element failures in led.html, etc.) previously wasn't
+// captured at all without opening dev tools, which isn't available in a
+// packaged build. Added 2026-07-14 to close that gap ahead of investigating
+// the queue-add display-drop reports.
+function attachConsoleForwarding(win, label) {
+  // This Electron build (29.4.6) emits console-message with the OLD positional
+  // signature (event, level, message, line, sourceId), not the newer single
+  // messageDetails-object signature electron.d.ts in this same node_modules
+  // describes — confirmed by directly instrumenting a real console-message
+  // listener and inspecting the raw arguments at runtime (the .d.ts alone was
+  // misleading here). Do not "fix" this back to the object style without
+  // re-verifying against actual runtime args first.
+  win.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    const levelName = ['verbose', 'info', 'warning', 'error'][level] || 'log'
+    console.log(`[${ts()}] [renderer:${label}] [${levelName}] ${message}`)
+  })
+}
+
 function createLedWindow() {
   const { screen } = require('electron')
   const primaryDisplay = screen.getPrimaryDisplay()
@@ -607,6 +738,8 @@ function createLedWindow() {
     })
     ledWindow.loadFile(path.join(__dirname, 'renderer', 'led.html'))
     ledWindow.setAlwaysOnTop(true, 'screen-saver')
+    attachLedWindowHealthMonitoring(ledWindow)
+    attachConsoleForwarding(ledWindow, 'led')
     ledWindow.webContents.once('did-finish-load', () => {
       // Delay gives macOS time to settle the window on the external display before
       // requesting fullscreen — improves reliability across different display setups
@@ -625,6 +758,8 @@ function createLedWindow() {
       webPreferences: { preload: path.join(__dirname, 'preload.js'), nodeIntegration: false, contextIsolation: true, webSecurity: false, backgroundThrottling: false }
     })
     ledWindow.loadFile(path.join(__dirname, 'renderer', 'led.html'))
+    attachLedWindowHealthMonitoring(ledWindow)
+    attachConsoleForwarding(ledWindow, 'led')
     ledWindow.webContents.once('did-finish-load', () => {
       ledWindow.webContents.send('no-external-display')
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -651,6 +786,7 @@ function createWindows() {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), nodeIntegration: false, contextIsolation: true, webSecurity: false, backgroundThrottling: false }
   })
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+  attachConsoleForwarding(mainWindow, 'main')
 
   // Auto-open the fullscreen LED output window ONLY in the packaged (customer)
   // app. In dev (npm start) skip it: a frameless, always-on-top, fullscreen
@@ -658,14 +794,89 @@ function createWindows() {
   // the mouse/keyboard. Use the "Open External Screen" button to open it manually
   // during dev when you actually want to test projector output.
   if (app.isPackaged) {
-    // Auto-open LED window if external display is already connected at launch
-    if (screen.getAllDisplays().find(d => d.id !== primaryDisplay.id)) {
-      createLedWindow()
+    // macOS doesn't always have display enumeration fully settled the instant
+    // app.whenReady() fires — especially right after boot or waking from sleep
+    // — so every trigger below waits a moment before trusting
+    // screen.getAllDisplays() and recreating the LED window.
+    //
+    // Debounced through one shared timer rather than each trigger scheduling
+    // its own independent setTimeout: startup, display-added, and
+    // display-metrics-changed can all fire within milliseconds of each other
+    // (e.g. a display settling right as the app launches), and without this,
+    // two of them could each schedule their own createLedWindow() and end up
+    // with two overlapping LED windows instead of one clean recreation.
+    // Returns a stable string keyed on each display's id + bounds/resolution
+    // only (deliberately excludes workArea) — entering/exiting fullscreen on
+    // a display changes its workArea (menu bar/dock hide) without changing
+    // its actual bounds or resolution, and that workArea-only change is
+    // exactly what was causing display-metrics-changed to re-fire from our
+    // own LED window's setFullScreen(true) call, producing an infinite
+    // refresh loop (found 2026-07-14). Comparing against this signature lets
+    // us tell a genuine external metrics change apart from one our own
+    // refresh just caused.
+    function getDisplaySignature() {
+      return screen.getAllDisplays()
+        .map(d => `${d.id}:${d.bounds.x},${d.bounds.y},${d.bounds.width},${d.bounds.height}`)
+        .sort()
+        .join('|')
     }
-    // Auto-open LED window whenever a display is plugged in
-    screen.on('display-added', () => {
-      if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
-      setTimeout(() => createLedWindow(), 500) // small delay lets OS register the display
+    let lastDisplaySignature = getDisplaySignature()
+
+    const DISPLAY_SETTLE_DELAY_MS = 500
+    let ledWindowRefreshTimer = null
+    function scheduleLedWindowRefresh(reason) {
+      console.log(`[${ts()}] [display] ${reason} — scheduling LED window refresh in ${DISPLAY_SETTLE_DELAY_MS}ms. Displays:`, screen.getAllDisplays().map(d => ({ id: d.id, bounds: d.bounds })))
+      if (ledWindowRefreshTimer) clearTimeout(ledWindowRefreshTimer)
+      ledWindowRefreshTimer = setTimeout(() => {
+        ledWindowRefreshTimer = null
+        if (ledWindow && !ledWindow.isDestroyed()) ledWindow.destroy()
+        if (screen.getAllDisplays().find(d => d.id !== primaryDisplay.id)) {
+          createLedWindow()
+        }
+      }, DISPLAY_SETTLE_DELAY_MS)
+    }
+
+    // Startup: don't trust getAllDisplays() synchronously — go through the
+    // same settle-and-check path as every other trigger.
+    scheduleLedWindowRefresh('startup')
+
+    // A genuinely new display being plugged in.
+    screen.on('display-added', (event, newDisplay) => {
+      console.log(`[${ts()}] [display] display-added event:`, { id: newDisplay.id, bounds: newDisplay.bounds })
+      lastDisplaySignature = getDisplaySignature()
+      scheduleLedWindowRefresh('display-added')
+    })
+
+    // An already-connected display's arrangement/resolution/rotation changing
+    // (e.g. someone touching System Settings → Displays) fires THIS, not
+    // display-added — display-added is only for a new display being plugged
+    // in. Without this listener, the LED window could end up on stale bounds
+    // (or never get created at all if it missed the startup window) with no
+    // way to recover short of a real unplug/replug.
+    //
+    // Gated on an actual bounds/resolution diff (fixed 2026-07-14): this
+    // event also fires when nothing about the physical display setup
+    // changed — e.g. our own LED window's setFullScreen(true) call changes
+    // that display's workArea, which re-fires display-metrics-changed, which
+    // used to unconditionally schedule another refresh, which entered
+    // fullscreen again, ad infinitum (288 iterations observed in the field).
+    // Comparing real bounds/resolution against the last known signature
+    // breaks the loop while still catching genuine external changes.
+    screen.on('display-metrics-changed', (event, display, changedMetrics) => {
+      const newSignature = getDisplaySignature()
+      console.log(`[${ts()}] [display] display-metrics-changed event:`, { id: display.id, bounds: display.bounds, changedMetrics })
+      if (newSignature === lastDisplaySignature) {
+        console.log(`[${ts()}] [display] display-metrics-changed ignored — bounds/resolution unchanged since last known state (likely self-caused, e.g. fullscreen workArea change)`)
+        return
+      }
+      lastDisplaySignature = newSignature
+      scheduleLedWindowRefresh('display-metrics-changed')
+    })
+
+    // Not a fix for this bug, but logging removal is cheap and closes a real
+    // gap: previously nothing observed a display disconnecting at all.
+    screen.on('display-removed', (event, oldDisplay) => {
+      console.log(`[${ts()}] [display] display-removed event:`, { id: oldDisplay.id, bounds: oldDisplay.bounds })
     })
   }
 
